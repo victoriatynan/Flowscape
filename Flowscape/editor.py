@@ -389,6 +389,7 @@ class Editor:
 
     def _draw_cars(self):
         for car in self.cars:
+            car.draw_haze(self.screen, self.camera)
             car.draw(self.screen, self.camera)
 
     def _draw_nodes(self):

@@ -18,6 +18,26 @@ CAR_W = 10
 CAR_H = 3
 
 LANE_OFFSET = 6
+LANE_WIDTH = 12   # must match RoadSegment.ROAD_WIDTH_WORLD
+
+
+def _haze_color(speed_ratio):
+    """Map 0.0 (stopped) -> red, 1.0 (full speed) -> green, via yellow."""
+    t = max(0.0, min(1.0, speed_ratio))
+    if t <= 0.5:
+        s = t * 2
+        return (
+            int(200 + (210 - 200) * s),
+            int(40  + (180 - 40)  * s),
+            int(40  + (20  - 40)  * s),
+        )
+    else:
+        s = (t - 0.5) * 2
+        return (
+            int(210 + (40  - 210) * s),
+            int(180 + (190 - 180) * s),
+            int(20  + (80  - 20)  * s),
+        )
 
 MIN_GAP = 28
 BRAKE_DIST = 90
@@ -210,6 +230,62 @@ class Car:
     # ----------------------------
     # Draw
     # ----------------------------
+
+    def draw_haze(self, screen, camera):
+        speed_ratio = (self._current_speed / self.speed) if self.speed > 0 else 0.0
+        r, g, b = _haze_color(speed_ratio)
+
+        sx = (self.x - camera.x) * camera.zoom
+        sy = (self.y - camera.y) * camera.zoom
+
+        half_len    = CAR_W * 2.5 * camera.zoom   # haze extends beyond the car
+        car_half    = CAR_W * camera.zoom           # car body half-length
+        fade_region = half_len - car_half           # length of the fade zone past each car end
+        lane_half_w = LANE_WIDTH * 0.5 * camera.zoom
+
+        cos_a = math.cos(self.angle)
+        sin_a = math.sin(self.angle)
+
+        size = int(half_len + lane_half_w) + 4
+        surf = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
+        cx = cy = float(size)
+
+        # Slice the haze along the road direction.
+        # Each slice's alpha is:
+        #   - Full over the car body (|lx| <= car_half)
+        #   - Cosine-fades to 0 at the outer haze edge (|lx| == half_len)
+        # Width layers shrink inward so the haze fades to 0 at the lane edges.
+        L_STEPS  = 10
+        W_LAYERS = 5
+        slice_hw = half_len / (L_STEPS - 1)
+
+        for li in range(L_STEPS):
+            t  = li / (L_STEPS - 1)
+            lx = (t - 0.5) * 2.0 * half_len
+
+            beyond = abs(lx) - car_half
+            if beyond <= 0:
+                len_fade = 1.0
+            else:
+                len_fade = math.cos(beyond / fade_region * math.pi / 2)
+
+            for wi in range(1, W_LAYERS + 1):
+                w_frac = wi / W_LAYERS
+                alpha  = int(w_frac * len_fade * 55)
+                if alpha <= 0:
+                    continue
+                hh = lane_half_w * w_frac
+                hw = slice_hw
+
+                corners = [
+                    (cx + (lx - hw) * cos_a + hh * sin_a, cy + (lx - hw) * sin_a - hh * cos_a),
+                    (cx + (lx + hw) * cos_a + hh * sin_a, cy + (lx + hw) * sin_a - hh * cos_a),
+                    (cx + (lx + hw) * cos_a - hh * sin_a, cy + (lx + hw) * sin_a + hh * cos_a),
+                    (cx + (lx - hw) * cos_a - hh * sin_a, cy + (lx - hw) * sin_a + hh * cos_a),
+                ]
+                pygame.draw.polygon(surf, (r, g, b, alpha), corners)
+
+        screen.blit(surf, (int(sx) - size, int(sy) - size))
 
     def draw(self, screen, camera):
 

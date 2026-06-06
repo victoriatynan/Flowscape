@@ -179,6 +179,23 @@ class RoadSegment:
 
         return pts
 
+    def hit_test(self, sx, sy, camera):
+        pts = self._screen_polyline(camera, steps=20)
+        threshold = max(6, self.ROAD_WIDTH_WORLD * camera.zoom)
+        for i in range(1, len(pts)):
+            ax, ay = pts[i - 1]
+            bx, by = pts[i]
+            dx, dy = bx - ax, by - ay
+            seg_sq = dx * dx + dy * dy
+            if seg_sq == 0:
+                dist = math.hypot(sx - ax, sy - ay)
+            else:
+                t = max(0.0, min(1.0, ((sx - ax) * dx + (sy - ay) * dy) / seg_sq))
+                dist = math.hypot(sx - (ax + t * dx), sy - (ay + t * dy))
+            if dist <= threshold:
+                return True
+        return False
+
     def draw(self, screen, camera):
         pts = self._screen_polyline(camera)
 
@@ -190,12 +207,9 @@ class RoadSegment:
         if self.selected:
             road_color = self.ROAD_SELECTED_COLOR
             lane_color = (255, 230, 100)
-        elif self.flow is None:
+        else:
             road_color = self.ROAD_COLOR
             lane_color = self.LANE_COLOR
-        else:
-            road_color = _flow_color(self.flow)
-            lane_color = _lerp_color((60, 60, 60), (200, 230, 200), self.flow)
 
         pygame.draw.lines(screen, road_color, False, pts, width)
 
