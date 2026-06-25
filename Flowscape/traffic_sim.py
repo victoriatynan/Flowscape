@@ -24,9 +24,9 @@ Traversal geometry:
   the road centerline offset to the lane center (same sign convention as
   lane_graph/road_style), trimmed back to the junction mouths, and
   reversed for reverse-direction lanes. Between two lanes the vehicle
-  crosses the junction along lane_graph.get_connection_curve() -- the
-  single source of truth for junction connection geometry, shared with
-  the debug overlay -- so what is drawn and what is driven can never
+  crosses the junction along lane_graph.get_connection_curve(), the
+  shared definition of junction connection geometry, used by
+  the debug overlay, so what is drawn and what is driven can never
   diverge, and the vehicle never teleports laterally at a turn. The
   connection arc counts as the ENTRY of the next lane: that is the
   node-transition moment, where the move is validated against the
@@ -136,7 +136,7 @@ def build_routing_graph(network):
     Returns (edges, turns, connections):
       edges: {lane_id: [(next_lane_id, cost), ...]}  (sorted, deterministic)
       turns: {(lane_id, next_lane_id): turn_type}    (for debug/validation)
-      connections: {(lane_id, next_lane_id): LaneConnection} -- carries the
+      connections: {(lane_id, next_lane_id): LaneConnection}, which carries the
         LaneEnds whose mouth positions feed get_connection_curve(), so
         traversal geometry comes from the same objects as the lane graph.
     """
@@ -253,8 +253,8 @@ def lane_polyline(network, lane_id):
 
     Trim-then-offset (not offset-then-trim) on purpose: it makes the lane
     endpoints coincide EXACTLY with the LaneEnd mouth positions lane_graph
-    computes -- the same points get_connection_curve() starts and ends at
-    -- so lane segments and junction connection curves join with zero gap.
+    computes (the same points get_connection_curve() starts and ends at)
+    so lane segments and junction connection curves join with zero gap.
     """
     road_id, direction, lane_index = lane_id
     road = network.roads[road_id]
@@ -334,6 +334,9 @@ class Vehicle:
     segments: list = field(default_factory=list)
     seg_index: int = 0
     seg_s: float = 0.0               # arc position within current segment
+    # Destination building id (set for scheduled trips) so a building's
+    # occupancy can be credited when this vehicle arrives.
+    dest_building_id: int = None
 
     def _enter_segment(self, index, valid_edges):
         """Advance to segment `index`. Entering a connection segment IS the
@@ -390,17 +393,24 @@ class Vehicle:
 
 class TrafficSimulation:
     """Single-owner of vehicles for the editor. Paths are computed ONCE at
-    spawn time from the current network; vehicles then follow them blindly
-    -- by design, routes are never recomputed mid-travel."""
+    spawn time from the current network; vehicles then follow them blindly,
+    by design never recomputed mid-travel."""
 
     def __init__(self, network):
         self.network = network
         self.vehicles = []
         self._valid_edges = set()
+        # Routing-graph cache for batch trip spawns (see prepare_routes).
+        self._edges = None
+        self._turns = None
+        self._connections = None
 
     def reset(self):
         self.vehicles = []
         self._valid_edges = set()
+        self._edges = None
+        self._turns = None
+        self._connections = None
 
     def spawn_vehicle(self, start_node_id, dest_node_id):
         """Compute a lane path start->dest and spawn a vehicle on it.
@@ -413,13 +423,24 @@ class TrafficSimulation:
             return None, (f"No lane path from node {start_node_id} "
                           f"to node {dest_node_id}")
 
+        vehicle = self._spawn_on_path(path, connections)
+        self._valid_edges = set(turns.keys())
+        turn_summary = [turns[(path[i], path[i + 1])]
+                        for i in range(len(path) - 1)]
+        return vehicle, (f"Path: {len(path)} lanes, "
+                         f"turns: {', '.join(turn_summary) or 'none'}")
+
+    def _spawn_on_path(self, path, connections):
+        """Compile a lane path into traversal segments, create the Vehicle,
+        add it, and return it. Caller owns self._valid_edges. Shared by the
+        single-vehicle spawn_vehicle() and the batch spawn_trip()."""
         segments = []
         prev_lane = None
         for lane_id in path:
             pts = lane_polyline(self.network, lane_id)
             if prev_lane is not None:
                 # Junction transition geometry comes from the shared
-                # single-source-of-truth curve generator -- the identical
+                # curve generator, the identical
                 # curve the lane-graph overlay draws for this connection.
                 conn = connections[(prev_lane, lane_id)]
                 node = self.network.nodes[lane_arrival_node(self.network, prev_lane)]
@@ -435,11 +456,40 @@ class TrafficSimulation:
                           pos=segments[0]["points"][0],
                           heading=_direction_at_arc(segments[0]["points"], 0.0))
         self.vehicles.append(vehicle)
-        self._valid_edges = set(turns.keys())
-        turn_summary = [turns[(path[i], path[i + 1])]
-                        for i in range(len(path) - 1)]
-        return vehicle, (f"Path: {len(path)} lanes, "
-                         f"turns: {', '.join(turn_summary) or 'none'}")
+        return vehicle
+
+    def prepare_routes(self):
+        """Build the routing graph ONCE, to be reused across many trip
+        spawns in a batch (see spawn_trip). Cheap per-spawn cost afterward."""
+        self._edges, self._turns, self._connections = build_routing_graph(self.network)
+        self._valid_edges = set(self._turns.keys())
+
+    def spawn_trip(self, start_node_id, dest_node_id, dest_building_id=None):
+        """Spawn one vehicle for a scheduled trip using the cached routing
+        graph (prepare_routes() is called lazily if needed). Returns the
+        Vehicle, or None when no path exists. Quiet: no status string, since
+        this is called many times by the scheduler. `dest_building_id` rides
+        along so the destination building's occupancy can be credited on
+        arrival."""
+        if self._edges is None:
+            self.prepare_routes()
+        path = find_lane_path(self._edges,
+                              lanes_departing_node(self.network, start_node_id),
+                              lanes_arriving_node(self.network, dest_node_id))
+        if path is None:
+            return None
+        vehicle = self._spawn_on_path(path, self._connections)
+        vehicle.dest_building_id = dest_building_id
+        return vehicle
+
+    def cull_arrived(self):
+        """Drop vehicles that have reached their destination so a long trip
+        run does not accumulate stationary cars on screen. Returns the list of
+        culled (arrived) vehicles so callers can credit building occupancy."""
+        arrived = [v for v in self.vehicles if v.state == STATE_ARRIVED]
+        if arrived:
+            self.vehicles = [v for v in self.vehicles if v.state != STATE_ARRIVED]
+        return arrived
 
     def toggle_demo_vehicle(self):
         """Editor convenience (V key): spawn one vehicle between a
@@ -471,27 +521,30 @@ class TrafficSimulation:
         for vehicle in self.vehicles:
             vehicle.update(dt, self._valid_edges)
 
-    def visual_layers(self):
-        """Debug visualization: full path, current lane,
-        next lane, node-transition markers, and the vehicle itself --
-        emitted as the editor's generic visual-layer shape dicts."""
+    def visual_layers(self, show_paths=True):
+        """Visualization emitted as the editor's generic visual-layer shape
+        dicts. With `show_paths` (default), the route overlay is included:
+        the full path polylines, node-transition markers, and the current/
+        next-lane highlights. With show_paths=False, ONLY the vehicles (car
+        sprites / state markers) are emitted: paths off, cars on."""
         layers = []
         for vehicle in self.vehicles:
-            for seg in vehicle.segments:
-                layers.append({"shape": "line", "points": seg["points"],
-                               "color": COLOR_PATH, "width": 2})
-                if seg["kind"] == "connection":
-                    layers.append({"shape": "circle", "pos": seg["node_pos"],
-                                   "radius": 4, "color": COLOR_TRANSITION,
-                                   "alpha": 120})
-            for lane_id, color in ((vehicle.current_lane, COLOR_CURRENT_LANE),
-                                   (vehicle.next_lane, COLOR_NEXT_LANE)):
-                if lane_id is None:
-                    continue
+            if show_paths:
                 for seg in vehicle.segments:
-                    if seg["kind"] == "lane" and seg["lane_id"] == lane_id:
-                        layers.append({"shape": "line", "points": seg["points"],
-                                       "color": color, "width": 4})
+                    layers.append({"shape": "line", "points": seg["points"],
+                                   "color": COLOR_PATH, "width": 2})
+                    if seg["kind"] == "connection":
+                        layers.append({"shape": "circle", "pos": seg["node_pos"],
+                                       "radius": 4, "color": COLOR_TRANSITION,
+                                       "alpha": 120})
+                for lane_id, color in ((vehicle.current_lane, COLOR_CURRENT_LANE),
+                                       (vehicle.next_lane, COLOR_NEXT_LANE)):
+                    if lane_id is None:
+                        continue
+                    for seg in vehicle.segments:
+                        if seg["kind"] == "lane" and seg["lane_id"] == lane_id:
+                            layers.append({"shape": "line", "points": seg["points"],
+                                           "color": color, "width": 4})
             sprite = vehicle_sprite_path()
             if sprite is not None:
                 # Non-moving debug states stay visible as a translucent

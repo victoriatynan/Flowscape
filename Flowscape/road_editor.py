@@ -21,7 +21,7 @@ Tool State System:
 
 Camera System:
   All node/road/zone coordinates remain in WORLD space (feet), exactly as
-  before -- geometry generation is untouched. Camera.world_to_screen() /
+  before; geometry generation is untouched. Camera.world_to_screen() /
   screen_to_world() convert between world space and canvas pixels for
   rendering and for hit-testing mouse input. Mouse-wheel zooms around the
   cursor; right-click-drag pans.
@@ -62,11 +62,15 @@ Controls:
 
 import math
 import os
+import random
 import sys
 import pygame
 
+import palette
+import road_style
 from road_geometry import (Node, Road, Zone, compute_road_geometry, _perpendicular,
-                            compute_control_point, compute_road_edges, compute_road_polygon)
+                            compute_control_point, compute_road_edges, compute_road_polygon,
+                            sample_cubic_bezier)
 from map_data import save_map, load_map
 from buildings import Building
 from road_style import (get_road_style, marking_segments, decal_transform, MARKING_NONE,
@@ -77,6 +81,10 @@ from snap_mode import (SnapModeController, SnapModePanel, SNAP_AUTO, SNAP_STRAIG
                         SNAP_CURVE, SNAP_MODE_LABELS)
 from lane_graph import build_lane_graph, lane_graph_visual_layers
 from traffic_sim import TrafficSimulation
+from destinations import (RESIDENTIAL, OFFICE, RETAIL, SCHOOL, RECREATION,
+                          SMALL, MEDIUM, LARGE, BUILDING_TYPES, generate_trips)
+from sim_clock import TripScheduler
+from test_city import create_test_city
 
 
 NODE_RADIUS = 8
@@ -85,8 +93,40 @@ CURVATURE_STEP = 8.0
 
 MAP_SAVE_PATH = "map_save.json"
 
+# Building footprint rendering (UI only: reads BuildingType data, draws it).
+BUILDING_CATEGORY_COLORS = {
+    RESIDENTIAL: (95, 175, 95),
+    OFFICE: (90, 135, 215),
+    RETAIL: (225, 165, 75),
+    SCHOOL: (210, 95, 95),
+    RECREATION: (120, 200, 135),
+}
+BUILDING_DEFAULT_COLOR = (180, 180, 180)
+BUILDING_SIZE_FT = {SMALL: 30.0, MEDIUM: 55.0, LARGE: 80.0}
+BUILDING_FILL_ALPHA = 150
+# Building tool: ordered archetypes for the picker, placement offset/feel.
+BUILDING_TYPE_ORDER = ["House", "Apartment", "Small Office", "Large Office",
+                       "Store", "School", "Park"]
+BUILDING_PLACE_OFFSET = 45.0    # ft: footprint sits this far off its node
+BUILDING_PREVIEW_ALPHA = 90     # ghost footprint while the tool is active
+
+# Trip demo (T key / Trips button): a watchable subset of the day's trips,
+# played back over an accelerated clock. The full realistic count would be
+# too many cars.
+DEMO_TRIP_LIMIT = 300       # per DAY
+DEMO_START_HOUR = 6.5
+DEMO_HOURS_PER_SEC = 0.4
+DEMO_SEED = 0               # base seed; each day uses DEMO_SEED + day_index
+# "Trips at once": live cap on concurrent cars (slider). When at the cap, a
+# due departure waits until a car finishes its trip.
+TRIPS_AT_ONCE_MIN = 5
+TRIPS_AT_ONCE_MAX = 120
+TRIPS_AT_ONCE_DEFAULT = 40
+
 CANVAS_WIDTH = 1024
-CANVAS_HEIGHT = 768
+# Tall enough that the full sidebar stack (big icon tiles + all panels +
+# the Settings sliders) fits on screen at startup; window stays resizable.
+CANVAS_HEIGHT = 920
 SIDEBAR_WIDTH = 280
 MIN_WINDOW_WIDTH = SIDEBAR_WIDTH + 320
 MIN_WINDOW_HEIGHT = 240
@@ -97,7 +137,7 @@ ZOOM_STEP = 1.1
 
 # UI-only reference scale for the map scale bar: at camera.zoom == 1.0,
 # one world foot is rendered as WORLD_SCALE screen pixels. (World/geometry
-# data is unaffected -- this only feeds the scale-bar label/length.)
+# data is unaffected; this only feeds the scale-bar label/length.)
 WORLD_SCALE = 3
 
 SCALE_BAR_VALUES_FT = [10, 20, 50, 100, 200, 500]
@@ -109,6 +149,7 @@ COLOR_SCALE_BAR_BG = (0, 0, 0)
 TOOL_SELECT = "select_tool"
 TOOL_NODE = "node_tool"
 TOOL_ROAD = "new_road_tool"
+TOOL_BUILDING = "building_tool"
 TOOL_ZONE = "zone_tool"
 
 ACTION_SAVE = "action_save"
@@ -118,11 +159,12 @@ TOOL_LABELS = {
     TOOL_SELECT: "Select Tool",
     TOOL_NODE: "Node Tool",
     TOOL_ROAD: "New Road Tool",
+    TOOL_BUILDING: "Building Tool",
     TOOL_ZONE: "Zone Tool",
 }
 
 # UI-only tooltip content, keyed by toolbar item id (tool or action). The UI
-# reads this table to render hover tooltips -- it contains no engine logic.
+# reads this table to render hover tooltips; it contains no engine logic.
 TOOLTIPS = {
     TOOL_SELECT: ("Select Tool", "Select and edit nodes/roads",
                    "Click to select, drag to move/bend"),
@@ -130,13 +172,63 @@ TOOLTIPS = {
                 "Click anywhere to place a node"),
     TOOL_ROAD: ("New Road Tool", "Connect two existing nodes",
                 "Click node A, then node B"),
+    TOOL_BUILDING: ("Building Tool", "Place a building on a road node",
+                    "Pick a type, click a road node"),
     TOOL_ZONE: ("Zone Tool", "Draw zone polygons", "Coming soon"),
     ACTION_SAVE: ("Save Map", "Write the map to disk", f"Saves to {MAP_SAVE_PATH}"),
     ACTION_LOAD: ("Load Map", "Reload the map from disk", f"Loads from {MAP_SAVE_PATH}"),
 }
 
+# UI icons live in the sibling "2D Assets" folder (one level up from this
+# package). Buttons with a mapped icon show the icon instead of a text label;
+# everything else stays text. Missing/unloadable icons fall back to text.
+_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "2D Assets")
+_ICON_CACHE = {}
+
+# Tool/button id -> icon filename (without .png).
+TOOL_ICONS = {
+    TOOL_SELECT: "MouseSelection-button",
+    TOOL_NODE: "node-button",
+    TOOL_ROAD: "roadpath-button",
+}
+
+# Icon-button tile size (matches the icons' ~1.2:1 shape), shared by the
+# toolbar tools and the Sim-panel play/pause button so all icon buttons match.
+# The icon IS the button: no background fill and no padding, so the tile equals
+# the icon's bounds (incl. the dark outline baked into the art). 2x the old size.
+ICON_TILE_W = 122
+ICON_TILE_H = 102
+ICON_TILE_PAD = 0
+ICON_TILE_GAP = 4          # horizontal gap between icon tiles (fits 2 per row)
+# The ACTIVE tool's icon is tinted pink (a multiplicative color "filter" that
+# keeps the art's shading + transparency); inactive icons render normally.
+COLOR_ICON_ACTIVE = (255, 110, 190)
+
+
+def get_icon(name, target_h):
+    """Load+cache a UI icon scaled to `target_h` px (aspect preserved).
+    Returns a Surface, or None when the file is missing/unloadable so callers
+    fall back to a text label. Requires the display to be initialized."""
+    key = (name, int(target_h))
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+    surf = None
+    try:
+        img = pygame.image.load(os.path.join(_ICON_DIR, name + ".png")).convert_alpha()
+        scale = target_h / img.get_height()
+        surf = pygame.transform.smoothscale(
+            img, (max(1, round(img.get_width() * scale)), int(target_h)))
+    except (pygame.error, FileNotFoundError):
+        surf = None
+    _ICON_CACHE[key] = surf
+    return surf
+
 BUTTON_PRESS_DURATION_MS = 120
 
+# COLOR RULE: from now on, every color used in Flowscape must come from the
+# "fantasy-24" palette in palette.py (use palette.color("rrggbb") or
+# palette.nearest(rgb)). The COLOR_* constants below predate that rule and are
+# NOT yet palette-exact; migrate them to palette entries over time.
 COLOR_BG = (30, 32, 36)
 COLOR_SIDEBAR_BG = (24, 25, 28)
 COLOR_SIDEBAR_TEXT = (210, 210, 210)
@@ -158,6 +250,19 @@ PREVIEW_NODE_ALPHA = 90  # ~0.35 of 255
 PREVIEW_NODE_ALPHA_SNAPPED = 220  # ~0.85 of 255, locked to a node
 SNAP_RADIUS = 20  # world units
 NODE_DRAG_THRESHOLD = 4
+# Placement grid (snap nodes/road endpoints to a regular spacing). Logic lives
+# in PlacementManager; the overlay below is a PLACEHOLDER visual only.
+GRID_SIZES_FT = [10.0, 25.0, 50.0, 100.0, 200.0]
+GRID_SIZE_DEFAULT = 50.0
+# PLACEHOLDER ground-grid line color (faint). Replace the grid overlay with
+# real tiled ground graphics later; this is the visual stand-in.
+COLOR_GRID = (48, 52, 60)
+# Procedural-graphics outline, mirroring the PNG icons' baked border: same
+# dark color, and a width that's ~3.8% of the element's size (the icon's
+# border / icon shorter-side ratio), floored so thin elements stay visible.
+COLOR_OUTLINE = (37, 37, 37)
+OUTLINE_RATIO = 0.038
+OUTLINE_MIN_PX = 2
 COLOR_ROAD = (90, 200, 255)
 COLOR_ROAD_SELECTED = (255, 140, 0)
 COLOR_ROAD_PREVIEW = (255, 210, 90)
@@ -167,12 +272,52 @@ CONTROL_POINT_HIT_RADIUS = 10
 COLOR_CONTROL_POINT = (255, 100, 100)
 COLOR_GUIDE_LINE = (255, 255, 255)
 COLOR_SAMPLE_POINT = (120, 255, 120)
-COLOR_ROAD_SURFACE = (70, 70, 80)
-COLOR_ROAD_SURFACE_SELECTED = (110, 80, 50)
+# Road graphics in the icon style, all from the fantasy-24 palette (see
+# palette.py). Layered look: dark outline -> asphalt -> thin lighter rim, with
+# a lighter "frame" tone for shoulders. All road lines are drawn THICK
+# (proportional to road width) to match the icons' heavy strokes.
+# Tones are mid/light so the road reads against the dark background (the
+# palette has no dark-gray asphalt that would contrast with near-black).
+COLOR_ROAD_SURFACE = palette.color("684c3c")           # asphalt (inner panel)
+COLOR_ROAD_SURFACE_SELECTED = palette.color("ab5c1c")  # selected asphalt
+# Each road/junction picks one of these surface tones (stable per id), so the
+# network has varied asphalt instead of one flat color.
+ROAD_SURFACE_OPTIONS = [palette.color("684c3c"), palette.color("927e6a"),
+                        palette.color("655e56"), palette.color("4e4843")]
+
+
+def road_surface_color(obj_id):
+    """Stable per-id asphalt tone (so a road keeps its color frame to frame)."""
+    return ROAD_SURFACE_OPTIONS[obj_id % len(ROAD_SURFACE_OPTIONS)]
+
+
+def set_road_knob(which, value):
+    """Live-set one of the two road tuning knobs and return a status string.
+    'line' -> ROAD_LINE_WEIGHT (this module); 'width' -> road_style's shared
+    ROAD_WIDTH_SCALE (so cars/junctions/drawing scale together)."""
+    global ROAD_LINE_WEIGHT
+    if which == "line":
+        ROAD_LINE_WEIGHT = value
+        return f"Line weight: x{value:.1f}"
+    road_style.ROAD_WIDTH_SCALE = value
+    return f"Road width: x{value:.1f}"
+COLOR_ROAD_FRAME = palette.color("927e6a")             # shoulder / outer frame
+COLOR_ROAD_RIM = palette.color("927e6a")               # thin inner rim highlight
+COLOR_ROAD_OUTLINE = palette.color("1f240a")           # heavy dark border
+COLOR_ROAD_MARK_CENTER = palette.color("efac28")       # center line (amber)
+COLOR_ROAD_MARK_EDGE = palette.color("efd8a1")         # edge/lane lines (cream)
+ROAD_OUTLINE_RATIO = 0.12      # road border width as a fraction of road width
+ROAD_MARK_RATIO = 0.10         # lane/edge line width as a fraction of carriageway
+ROAD_LINE_MIN_PX = 2           # floor so lines stay visible when zoomed out
+# KNOB 1: LINE WEIGHT. One multiplier on the thickness of ALL road lines
+# (borders + lane/edge lines). 1.0 = as tuned above; raise it (e.g. 1.5, 2.0)
+# for chunkier lines. Pair with ROAD_WIDTH_SCALE (Knob 2, in road_style.py):
+# thicker lines usually want wider roads so the asphalt still shows between.
+ROAD_LINE_WEIGHT = 2.3
 COLOR_CENTERLINE_DEBUG = (90, 200, 255)
 COLOR_LEFT_EDGE = (255, 80, 80)
 COLOR_RIGHT_EDGE = (80, 120, 255)
-COLOR_CURB = (60, 60, 60)
+COLOR_CURB = palette.color("684c3c")
 
 ZONE_COLORS = {
     "Residential": (90, 200, 100),
@@ -196,8 +341,9 @@ class RoadNetwork:
         self._next_zone_id = 1
         self._next_building_id = 1
 
-    def add_building(self, x, y, connection_node_ids=None, type="building", data=None):
-        building = Building(id=self._next_building_id, x=x, y=y, type=type,
+    def add_building(self, x, y, connection_node_ids=None, building_type="House", data=None):
+        building = Building(id=self._next_building_id, x=x, y=y,
+                             building_type=building_type,
                              connection_node_ids=list(connection_node_ids or []),
                              data=data or {})
         self.buildings[building.id] = building
@@ -212,11 +358,8 @@ class RoadNetwork:
             building.connection_node_ids.append(node_id)
 
     def is_intersection(self, node_id):
-        """Node classification (derived purely from road connectivity):
-          0 roads -> isolated, 1 -> endpoint, 2 -> continuation (bend),
-          3+ -> intersection. Only intersection nodes (>= 3) get junction
-          rendering/markings/pavement; continuation nodes render as plain
-          continuous road geometry, endpoints get dead-end caps."""
+        """True for a junction node (3+ connected roads). 1 road is an
+        endpoint, 2 a continuation bend; only 3+ gets junction pavement."""
         return len(self.roads_for_node(node_id)) >= 3
 
     def outward_tangent_at_node(self, road, node_id):
@@ -241,14 +384,14 @@ class RoadNetwork:
     # full-width mouth to the transition surface (the wide road never
     # narrows before the node).
     TAPER_RATIO = 4.0       # taper length per foot of per-side width step
-    TAPER_MIN = 12.0        # ft -- floor so even a small step eases visibly
-    TAPER_WIDE_SETBACK = 0.5  # ft -- token trim on the wider road's side
+    TAPER_MIN = 12.0        # ft; floor so even a small step eases visibly
+    TAPER_WIDE_SETBACK = 0.5  # ft; token trim on the wider road's side
 
     def road_trim_at_node(self, road, node_id):
         """Distance (feet) to trim `road` back from `node_id`, derived from
         the road's OWN carriageway width (not a shared/uniform radius), so
         the gap left for the junction surface follows each road's actual
-        edge geometry. 0 if the node isn't an intersection -- except at a
+        edge geometry. 0 if the node isn't an intersection, except at a
         2-road continuation node joining different total widths, where the
         narrower road is trimmed by a taper length (and the wider by a
         token setback) so a width-transition surface can be drawn on the
@@ -258,15 +401,33 @@ class RoadNetwork:
                 and not any(r.is_preview for r in roads_here)
                 and any(r.id == road.id for r in roads_here)):
             other = roads_here[0] if roads_here[1].id == road.id else roads_here[1]
-            # Only taper across a genuine continuation (mouths roughly
-            # opposing, bend <= ~90 deg). Sharper folds put both mouths on
-            # the same side of the node, where any transition surface
-            # degenerates into a bowtie -- render those like any other
-            # sharp bend (no trim, no taper).
+            # Genuine continuation (mouths roughly opposing, bend <= ~90 deg)
+            # gets the smooth continuation band below. Sharper folds are ROUNDED
+            # into a curved bend: a circular-arc-style curve tangent to both
+            # arms, whose centerline radius scales with the arm angle, tighter
+            # for sharper folds, widening toward the 90 deg boundary, floored at
+            # the half-width so the inner edge never inverts. Trim each road
+            # back to that arc's tangent point so the curved band + lane
+            # connectors (drawn through the SAME continuation path as >=90 deg
+            # bends) have room, and the straight edges are cut past where they
+            # would otherwise cross into a bowtie.
             out_self = self.outward_tangent_at_node(road, node_id)
             out_other = self.outward_tangent_at_node(other, node_id)
-            if out_self[0] * out_other[0] + out_self[1] * out_other[1] > 0.0:
-                return 0.0
+            cos_arm = max(-1.0, min(1.0, out_self[0] * out_other[0] + out_self[1] * out_other[1]))
+            if cos_arm > 0.0:
+                alpha = math.acos(cos_arm)               # arm angle (rad), < 90 deg
+                half = get_road_profile(road).total_width() / 2.0
+                radius = half * (1.0 + math.degrees(alpha) / 90.0)
+                tan_half = math.tan(alpha / 2.0)
+                tangent_len = radius / tan_half if tan_half > 1e-6 else radius
+                start = self.nodes[road.start_node_id].pos
+                end = self.nodes[road.end_node_id].pos
+                road_len = math.hypot(end[0] - start[0], end[1] - start[1])
+                # Use the full tangent length when the road can fit it; else
+                # take as much as the road allows, leaving ~one road-width of
+                # straight stub. A road too short even for this is a degenerate
+                # near-hairpin (the watchdog flags trim_overflow).
+                return min(tangent_len, max(0.0, road_len - 2.0 * half))
             w_self = get_road_profile(road).total_width()
             w_other = get_road_profile(other).total_width()
             if w_self < w_other - 1e-6:
@@ -281,15 +442,21 @@ class RoadNetwork:
                                                     end[1] - start[1]))
             if w_self > w_other + 1e-6:
                 return self.TAPER_WIDE_SETBACK
-            return 0.0
+            # Equal-width continuation/bend: trim both roads back like a mini
+            # junction so the bend gets a smooth connector surface + lane-line
+            # connectors (instead of two straight quads notching/overlapping
+            # at the node). Same trim law as an intersection corner.
+            return self._general_trim(road, node_id)
         if not self.is_intersection(node_id):
             return 0.0
-        # Trim back by half the carriageway (where the asphalt edge meets
-        # the junction) PLUS half the full profile width (the curb-return
-        # curve radius used for sidewalks/shoulders/edge lines) -- so the
-        # straight boundary geometry (pavement edges, edge lines, shoulder
-        # and sidewalk strips) ends exactly where the corner curve begins,
-        # with no straight segment left protruding past it.
+        return self._general_trim(road, node_id)
+
+    def _general_trim(self, road, node_id):
+        """Distance to pull `road`'s mouth back from `node_id` for a corner
+        connector: half the carriageway (where the asphalt edge meets the
+        junction) PLUS half the full profile width (the curb-return radius
+        used for sidewalks/shoulders/edge lines), so the straight boundary
+        geometry ends exactly where the corner curve begins."""
         profile = get_road_profile(road)
         trim = profile.carriageway_width() / 2.0 + profile.total_width() / 2.0
 
@@ -354,11 +521,8 @@ class RoadNetwork:
         return self.geometry_for_road(road)["control_point"]
 
     def set_curve_offset_from_control_point(self, road, control_pos):
-        """
-        Given a desired control-point position (world space), compute the
-        curve_offset (2D vector from the start->end midpoint) that places
-        the control point there. Lets the control point move freely.
-        """
+        """Set the road's curve_offset (vector from the start->end midpoint)
+        so its control point lands at control_pos (world space)."""
         start = self.nodes[road.start_node_id].pos
         end = self.nodes[road.end_node_id].pos
         mx, my = (start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0
@@ -379,6 +543,35 @@ class RoadNetwork:
                     best_dist = d
                     best = road
         return best
+
+    def building_at(self, x, y):
+        """Topmost placed building whose footprint square contains (x, y),
+        else None. Footprint size comes from the building's BuildingType."""
+        for b in reversed(list(self.buildings.values())):
+            bt = BUILDING_TYPES.get(b.building_type)
+            half = (BUILDING_SIZE_FT.get(bt.size, 30.0) if bt else 30.0) / 2.0
+            if abs(x - b.x) <= half and abs(y - b.y) <= half:
+                return b
+        return None
+
+    def remove_road(self, road_id):
+        """Remove a road. Nodes are left in place (they may become dead ends
+        or orphans, which the editor already handles)."""
+        self.roads.pop(road_id, None)
+
+    def remove_node(self, node_id):
+        """Remove a node and everything that cannot exist without it: its
+        connected roads (cascade), plus references to it in any building's
+        connection list (buildings stay placed, just detached)."""
+        for road in list(self.roads_for_node(node_id)):
+            self.roads.pop(road.id, None)
+        for b in self.buildings.values():
+            if node_id in b.connection_node_ids:
+                b.connection_node_ids = [n for n in b.connection_node_ids if n != node_id]
+        self.nodes.pop(node_id, None)
+
+    def remove_building(self, building_id):
+        self.buildings.pop(building_id, None)
 
     def geometry_for_road(self, road):
         start = self.nodes[road.start_node_id].pos
@@ -408,20 +601,20 @@ class Camera:
         self.zoom_target = 1.0
         self._zoom_anchor = (0.0, 0.0)
         # Viewport size in screen pixels, updated on resize/fullscreen.
-        # Transforms don't depend on it, but it's the single source of
-        # truth for anything (UI, future culling) that needs it.
+        # Transforms don't depend on it, but it's the one value
+        # anything (UI, future culling) reads when it needs it.
         self.viewport_width = CANVAS_WIDTH
         self.viewport_height = CANVAS_HEIGHT
 
     def set_viewport(self, width, height):
         """Update viewport size on resize/fullscreen. Position and zoom
-        are left untouched -- the world must not shift."""
+        are left untouched; the world must not shift."""
         self.viewport_width = width
         self.viewport_height = height
 
     # Camera is the SINGLE conversion authority between world space (feet)
-    # and screen space (pixels). Every other system -- rendering, the
-    # scale bar, hit-testing, placement -- must go through these methods
+    # and screen space (pixels). Every other system (rendering, the
+    # scale bar, hit-testing, placement) must go through these methods
     # (or feet_to_pixels/pixels_to_feet, which use the same factor) rather
     # than computing their own feet<->pixel scaling.
     def _scale(self):
@@ -536,11 +729,17 @@ INSTRUCTIONS = [
 
 class Toolbar:
     """
-    Basic UI shell: a row of tool buttons at the top of the sidebar.
+    Basic UI shell at the top of the sidebar. Buttons that have a mapped icon
+    (TOOL_ICONS) are drawn as icon TILES sized to the icon's aspect, packed
+    into rows; buttons without an icon stay as full-width text bars below.
     Only one tool can be active at a time (InputController.current_tool).
     """
 
-    BUTTON_HEIGHT = 32
+    BUTTON_HEIGHT = 32          # full-width text bars
+    ICON_BTN_W = ICON_TILE_W    # icon tile (matches the icons' ~1.2:1 shape)
+    ICON_BTN_H = ICON_TILE_H
+    ICON_PAD = ICON_TILE_PAD
+    ICON_GAP = ICON_TILE_GAP    # horizontal gap between icon tiles
     BUTTON_GAP = 8
     TOP_MARGIN = 16
     SIDE_MARGIN = 16
@@ -555,6 +754,7 @@ class Toolbar:
             (TOOL_SELECT, "Select", True),
             (TOOL_NODE, "Node Tool", True),
             (TOOL_ROAD, "New Road Tool", True),
+            (TOOL_BUILDING, "Building Tool", True),
             (TOOL_ZONE, "Zone Tool (soon)", False),
         ]
         self.action_buttons = [
@@ -562,83 +762,81 @@ class Toolbar:
             (ACTION_LOAD, "Load Map", True),
         ]
 
-    def layout(self, sidebar_rect):
-        """Return list of (tool_id, label, enabled, rect) in screen space."""
-        rects = []
-        x = sidebar_rect.x + self.SIDE_MARGIN
-        y = sidebar_rect.y + self.TOP_MARGIN
+    def _items_layout(self, sidebar_rect):
+        """Place every toolbar item, returning
+        [(item_id, label, enabled, rect, kind, is_icon), ...]. Icon items pack
+        into rows of tiles; non-icon items are full-width bars on their own
+        line (closing any open icon row first)."""
+        x0 = sidebar_rect.x + self.SIDE_MARGIN
         width = sidebar_rect.width - 2 * self.SIDE_MARGIN
-        for tool_id, label, enabled in self.buttons:
-            rect = pygame.Rect(x, y, width, self.BUTTON_HEIGHT)
-            rects.append((tool_id, label, enabled, rect))
-            y += self.BUTTON_HEIGHT + self.BUTTON_GAP
-        return rects
-
-    def action_layout(self, sidebar_rect):
-        """Return list of (action_id, label, enabled, rect) for the
-        Save/Load action buttons, placed below the tool buttons."""
-        rects = []
-        x = sidebar_rect.x + self.SIDE_MARGIN
-        y = self.bottom(sidebar_rect)
-        width = sidebar_rect.width - 2 * self.SIDE_MARGIN
-        for action_id, label, enabled in self.action_buttons:
-            rect = pygame.Rect(x, y, width, self.BUTTON_HEIGHT)
-            rects.append((action_id, label, enabled, rect))
-            y += self.BUTTON_HEIGHT + self.BUTTON_GAP
-        return rects
-
-    def bottom(self, sidebar_rect):
-        rects = self.layout(sidebar_rect)
-        return rects[-1][3].bottom + self.BUTTON_GAP if rects else sidebar_rect.y
+        x, y = x0, sidebar_rect.y + self.TOP_MARGIN
+        row_open = False
+        out = []
+        items = ([(b[0], b[1], b[2], "tool") for b in self.buttons]
+                 + [(a[0], a[1], a[2], "action") for a in self.action_buttons])
+        for item_id, label, enabled, kind in items:
+            if item_id in TOOL_ICONS:
+                if x + self.ICON_BTN_W > x0 + width:       # wrap the tile row
+                    x, y = x0, y + self.ICON_BTN_H + self.BUTTON_GAP
+                rect = pygame.Rect(x, y, self.ICON_BTN_W, self.ICON_BTN_H)
+                out.append((item_id, label, enabled, rect, kind, True))
+                x += self.ICON_BTN_W + self.ICON_GAP
+                row_open = True
+            else:
+                if row_open:                               # close the tile row
+                    x, y = x0, y + self.ICON_BTN_H + self.BUTTON_GAP
+                    row_open = False
+                rect = pygame.Rect(x0, y, width, self.BUTTON_HEIGHT)
+                out.append((item_id, label, enabled, rect, kind, False))
+                y += self.BUTTON_HEIGHT + self.BUTTON_GAP
+        return out
 
     def full_bottom(self, sidebar_rect):
-        rects = self.action_layout(sidebar_rect)
-        return rects[-1][3].bottom + self.BUTTON_GAP if rects else self.bottom(sidebar_rect)
+        items = self._items_layout(sidebar_rect)
+        return max((it[3].bottom for it in items), default=sidebar_rect.y) + self.BUTTON_GAP
 
-    def _draw_buttons(self, surface, rects, active_id, hovered_id):
+    def _button_color(self, item_id, enabled, active_id, hovered_id):
         now = pygame.time.get_ticks()
         pressed_active = self.pressed_id is not None and now < self.pressed_until
-        for item_id, label, enabled, rect in rects:
-            if not enabled:
-                color = COLOR_BUTTON_DISABLED
-                text_color = COLOR_BUTTON_TEXT_DISABLED
-            elif item_id == active_id:
-                # State priority: active > hover > click animation.
-                color = COLOR_BUTTON_ACTIVE
-                text_color = COLOR_BUTTON_TEXT
-            elif pressed_active and item_id == self.pressed_id:
-                color = COLOR_BUTTON_PRESSED
-                text_color = COLOR_BUTTON_TEXT
-            elif item_id == hovered_id:
-                color = COLOR_BUTTON_HOVER
-                text_color = COLOR_BUTTON_TEXT
-            else:
-                color = COLOR_BUTTON
-                text_color = COLOR_BUTTON_TEXT
-            pygame.draw.rect(surface, color, rect, border_radius=4)
-            label_surf = self.font.render(label, True, text_color)
-            label_rect = label_surf.get_rect(center=rect.center)
-            surface.blit(label_surf, label_rect)
+        if not enabled:
+            return COLOR_BUTTON_DISABLED, COLOR_BUTTON_TEXT_DISABLED
+        if item_id == active_id:
+            return COLOR_BUTTON_ACTIVE, COLOR_BUTTON_TEXT       # active > hover > press
+        if pressed_active and item_id == self.pressed_id:
+            return COLOR_BUTTON_PRESSED, COLOR_BUTTON_TEXT
+        if item_id == hovered_id:
+            return COLOR_BUTTON_HOVER, COLOR_BUTTON_TEXT
+        return COLOR_BUTTON, COLOR_BUTTON_TEXT
 
     def draw(self, surface, sidebar_rect, current_tool, hovered=None):
         hovered_id = hovered[1] if hovered is not None else None
-        self._draw_buttons(surface, self.layout(sidebar_rect), current_tool, hovered_id)
-        self._draw_buttons(surface, self.action_layout(sidebar_rect), None, hovered_id)
+        for item_id, label, enabled, rect, kind, is_icon in self._items_layout(sidebar_rect):
+            # Only tool buttons can be "active"; actions never are.
+            active_id = current_tool if kind == "tool" else None
+            icon = get_icon(TOOL_ICONS[item_id], rect.height - 2 * self.ICON_PAD) if is_icon else None
+            if icon is not None:
+                # Icon-only button: NO background fill. The active tool's icon
+                # is filtered pink; every other icon renders normally.
+                if item_id == active_id:
+                    icon = icon.copy()
+                    icon.fill(COLOR_ICON_ACTIVE, special_flags=pygame.BLEND_RGB_MULT)
+                surface.blit(icon, icon.get_rect(center=rect.center))
+            else:
+                color, text_color = self._button_color(item_id, enabled, active_id, hovered_id)
+                pygame.draw.rect(surface, color, rect, border_radius=4)
+                label_surf = self.font.render(label, True, text_color)
+                surface.blit(label_surf, label_surf.get_rect(center=rect.center))
 
     def handle_hover(self, sidebar_rect, screen_pos):
-        """Return (kind, id) for the button under screen_pos, else None.
-        Used for hover highlighting and tooltips (any enabled button)."""
-        for tool_id, label, enabled, rect in self.layout(sidebar_rect):
+        """Return (kind, id) for the enabled button under screen_pos, else
+        None. Used for hover highlighting and tooltips."""
+        for item_id, label, enabled, rect, kind, is_icon in self._items_layout(sidebar_rect):
             if enabled and rect.collidepoint(screen_pos):
-                return ("tool", tool_id)
-        for action_id, label, enabled, rect in self.action_layout(sidebar_rect):
-            if enabled and rect.collidepoint(screen_pos):
-                return ("action", action_id)
+                return (kind, item_id)
         return None
 
     def handle_click(self, sidebar_rect, screen_pos):
         """Return (kind, id) if an enabled button was clicked, else None.
-        kind is "tool" for tool-switch buttons or "action" for Save/Load.
         Also starts the brief press/click animation for that button."""
         clicked = self.handle_hover(sidebar_rect, screen_pos)
         if clicked is not None:
@@ -647,14 +845,317 @@ class Toolbar:
         return clicked
 
     def tooltip_rect_for(self, sidebar_rect, item_id):
-        for iid, label, enabled, rect in self.layout(sidebar_rect) + self.action_layout(sidebar_rect):
+        for iid, label, enabled, rect, kind, is_icon in self._items_layout(sidebar_rect):
             if iid == item_id:
                 return rect
         return None
 
 
+class SimPanel:
+    """Sidebar simulation controls: a Trips on/off toggle, a Paths on/off
+    toggle (route overlay, not the cars), and a 'Trips at once' slider
+    (concurrency cap). Pure UI: it draws the state passed in and reports user
+    actions; it owns no simulation state. Hit rects are cached during draw()
+    and reused for the next frame's click/drag tests."""
+
+    HEADER_GAP = 6
+    ROW_GAP = 8
+    BUTTON_HEIGHT = 30
+    SLIDER_HEIGHT = 18
+    SIDE_MARGIN = 16
+    KNOB_W = 10
+
+    def __init__(self, font, header_font):
+        self.font = font
+        self.header_font = header_font
+        self._trips_rect = None
+        self._paths_rect = None
+        self._track_rect = None
+        self.dragging = False
+        self._vmin = TRIPS_AT_ONCE_MIN
+        self._vmax = TRIPS_AT_ONCE_MAX
+
+    def draw(self, surface, rect, y, *, trips_on, paths_on, trips_value):
+        x = rect.x + self.SIDE_MARGIN
+        width = rect.width - 2 * self.SIDE_MARGIN
+
+        header = self.header_font.render("Simulation", True, COLOR_SIDEBAR_HEADER)
+        surface.blit(header, (x, y))
+        y += header.get_height() + self.HEADER_GAP
+
+        # Trips toggle: an icon-only TILE (same size as the toolbar icon
+        # buttons), NO background; play icon when stopped, pause when
+        # running, so the art alone shows the state. Text toggle fallback if
+        # the icons are missing.
+        icon = get_icon("pause-button" if trips_on else "play-button",
+                        ICON_TILE_H - 2 * ICON_TILE_PAD)
+        if icon is not None:
+            self._trips_rect = pygame.Rect(x, y, ICON_TILE_W, ICON_TILE_H)
+            surface.blit(icon, icon.get_rect(center=self._trips_rect.center))
+            y += ICON_TILE_H + self.ROW_GAP
+        else:
+            self._trips_rect = pygame.Rect(x, y, width, self.BUTTON_HEIGHT)
+            self._draw_toggle(surface, self._trips_rect,
+                              f"Trips: {'On' if trips_on else 'Off'}", trips_on)
+            y += self.BUTTON_HEIGHT + self.ROW_GAP
+
+        self._paths_rect = pygame.Rect(x, y, width, self.BUTTON_HEIGHT)
+        self._draw_toggle(surface, self._paths_rect,
+                          f"Paths: {'On' if paths_on else 'Off'}", paths_on)
+        y += self.BUTTON_HEIGHT + self.ROW_GAP
+
+        label = self.font.render(f"Trips at once: {trips_value}", True,
+                                 COLOR_SIDEBAR_TEXT)
+        surface.blit(label, (x, y))
+        y += label.get_height() + 4
+
+        self._track_rect = pygame.Rect(x, y, width, self.SLIDER_HEIGHT)
+        track_mid = y + self.SLIDER_HEIGHT // 2
+        pygame.draw.line(surface, COLOR_BUTTON, (x, track_mid),
+                         (x + width, track_mid), 4)
+        knob = pygame.Rect(0, 0, self.KNOB_W, self.SLIDER_HEIGHT)
+        knob.center = (self._value_to_x(trips_value), track_mid)
+        pygame.draw.rect(surface, COLOR_BUTTON_ACTIVE, knob, border_radius=3)
+        y += self.SLIDER_HEIGHT + self.ROW_GAP
+        return y
+
+    def _draw_toggle(self, surface, rect, label, on):
+        pygame.draw.rect(surface, COLOR_BUTTON_ACTIVE if on else COLOR_BUTTON,
+                         rect, border_radius=4)
+        s = self.font.render(label, True, COLOR_BUTTON_TEXT)
+        surface.blit(s, s.get_rect(center=rect.center))
+
+    def _value_to_x(self, value):
+        t = (value - self._vmin) / (self._vmax - self._vmin)
+        t = max(0.0, min(1.0, t))
+        return int(self._track_rect.x + t * self._track_rect.width)
+
+    def value_at(self, pos):
+        """Slider value at a screen x position (clamped, integer)."""
+        t = (pos[0] - self._track_rect.x) / max(1, self._track_rect.width)
+        t = max(0.0, min(1.0, t))
+        return int(round(self._vmin + t * (self._vmax - self._vmin)))
+
+    def handle_click(self, pos):
+        """Return 'trips' | 'paths' | 'slider' for a click, else None. A
+        slider click also begins a drag."""
+        if self._trips_rect and self._trips_rect.collidepoint(pos):
+            return "trips"
+        if self._paths_rect and self._paths_rect.collidepoint(pos):
+            return "paths"
+        if self._track_rect and self._track_rect.inflate(0, 14).collidepoint(pos):
+            self.dragging = True
+            return "slider"
+        return None
+
+    def handle_motion(self, pos):
+        """While dragging, the new slider value, else None."""
+        if self.dragging and self._track_rect is not None:
+            return self.value_at(pos)
+        return None
+
+    def release(self):
+        self.dragging = False
+
+
+class BuildingPanel:
+    """Sidebar building-type picker, shown only while the Building tool is
+    active: a radio list of the archetypes with a category-color swatch. Pure
+    UI that reports the clicked type; the active type lives on the controller."""
+
+    HEADER_GAP = 6
+    ROW_GAP = 5
+    BUTTON_HEIGHT = 26
+    SIDE_MARGIN = 16
+
+    def __init__(self, font, header_font):
+        self.font = font
+        self.header_font = header_font
+        self._rects = []   # [(type_name, rect), ...], refreshed each draw()
+
+    def draw(self, surface, rect, y, active_type):
+        x = rect.x + self.SIDE_MARGIN
+        width = rect.width - 2 * self.SIDE_MARGIN
+        header = self.header_font.render("Building", True, COLOR_SIDEBAR_HEADER)
+        surface.blit(header, (x, y))
+        y += header.get_height() + self.HEADER_GAP
+
+        self._rects = []
+        for name in BUILDING_TYPE_ORDER:
+            r = pygame.Rect(x, y, width, self.BUTTON_HEIGHT)
+            bt = BUILDING_TYPES.get(name)
+            swatch = (BUILDING_CATEGORY_COLORS.get(bt.category, BUILDING_DEFAULT_COLOR)
+                      if bt else BUILDING_DEFAULT_COLOR)
+            active = (name == active_type)
+            pygame.draw.rect(surface, COLOR_BUTTON_ACTIVE if active else COLOR_BUTTON,
+                             r, border_radius=4)
+            pygame.draw.rect(surface, swatch,
+                             pygame.Rect(r.x + 6, r.y + 6, 14, r.height - 12), border_radius=2)
+            label = self.font.render(name, True, COLOR_BUTTON_TEXT)
+            surface.blit(label, (r.x + 28, r.y + (r.height - label.get_height()) // 2))
+            self._rects.append((name, r))
+            y += self.BUTTON_HEIGHT + self.ROW_GAP
+        return y
+
+    def handle_click(self, pos):
+        for name, r in self._rects:
+            if r.collidepoint(pos):
+                return name
+        return None
+
+
+class GridPanel:
+    """Sidebar placement-grid controls (shown for the Node/Road tools): an
+    on/off toggle and a size stepper. Pure UI that reports the action; the grid
+    state lives in PlacementManager."""
+
+    HEADER_GAP = 6
+    ROW_GAP = 6
+    BUTTON_HEIGHT = 28
+    SIDE_MARGIN = 16
+
+    def __init__(self, font, header_font):
+        self.font = font
+        self.header_font = header_font
+        self._toggle_rect = None
+        self._minus_rect = None
+        self._plus_rect = None
+
+    def draw(self, surface, rect, y, enabled, size):
+        x = rect.x + self.SIDE_MARGIN
+        width = rect.width - 2 * self.SIDE_MARGIN
+        header = self.header_font.render("Grid", True, COLOR_SIDEBAR_HEADER)
+        surface.blit(header, (x, y))
+        y += header.get_height() + self.HEADER_GAP
+
+        self._toggle_rect = pygame.Rect(x, y, width, self.BUTTON_HEIGHT)
+        pygame.draw.rect(surface, COLOR_BUTTON_ACTIVE if enabled else COLOR_BUTTON,
+                         self._toggle_rect, border_radius=4)
+        lbl = self.font.render(f"Grid: {'On' if enabled else 'Off'}  (Alt: bypass)",
+                               True, COLOR_BUTTON_TEXT)
+        surface.blit(lbl, lbl.get_rect(center=self._toggle_rect.center))
+        y += self.BUTTON_HEIGHT + self.ROW_GAP
+
+        size_lbl = self.font.render(f"Size: {int(size)} ft", True, COLOR_SIDEBAR_TEXT)
+        surface.blit(size_lbl, (x, y + (self.BUTTON_HEIGHT - size_lbl.get_height()) // 2))
+        bw = self.BUTTON_HEIGHT
+        self._plus_rect = pygame.Rect(x + width - bw, y, bw, self.BUTTON_HEIGHT)
+        self._minus_rect = pygame.Rect(x + width - 2 * bw - 6, y, bw, self.BUTTON_HEIGHT)
+        for r, glyph in ((self._minus_rect, "-"), (self._plus_rect, "+")):
+            pygame.draw.rect(surface, COLOR_BUTTON, r, border_radius=4)
+            g = self.font.render(glyph, True, COLOR_BUTTON_TEXT)
+            surface.blit(g, g.get_rect(center=r.center))
+        y += self.BUTTON_HEIGHT + self.ROW_GAP
+        return y
+
+    def handle_click(self, pos):
+        if self._toggle_rect and self._toggle_rect.collidepoint(pos):
+            return "toggle"
+        if self._minus_rect and self._minus_rect.collidepoint(pos):
+            return "size_down"
+        if self._plus_rect and self._plus_rect.collidepoint(pos):
+            return "size_up"
+        return None
+
+
+class SettingsPanel:
+    """Sidebar settings (always shown): clock format toggle + two live tuning
+    sliders: Line weight (Knob 1) and Road width (Knob 2). Pure UI: reports
+    clicks/drags and the chosen values; the caller applies them to the knobs."""
+
+    HEADER_GAP = 6
+    ROW_GAP = 8
+    BUTTON_HEIGHT = 28
+    SLIDER_HEIGHT = 18
+    SIDE_MARGIN = 16
+    KNOB_W = 10
+    LINE_RANGE = (0.5, 3.0)
+    WIDTH_RANGE = (0.5, 3.0)
+
+    def __init__(self, font, header_font):
+        self.font = font
+        self.header_font = header_font
+        self._clock_rect = None
+        self._line_track = None
+        self._width_track = None
+        self._dragging = None        # "line" | "width" | None
+
+    def draw(self, surface, rect, y, clock_24h, line_weight, width_scale):
+        x = rect.x + self.SIDE_MARGIN
+        width = rect.width - 2 * self.SIDE_MARGIN
+        header = self.header_font.render("Settings", True, COLOR_SIDEBAR_HEADER)
+        icon = get_icon("settings-button", header.get_height())
+        hx = x
+        if icon is not None:
+            surface.blit(icon, (hx, y))
+            hx += icon.get_width() + 6
+        surface.blit(header, (hx, y))
+        y += header.get_height() + self.HEADER_GAP
+
+        self._clock_rect = pygame.Rect(x, y, width, self.BUTTON_HEIGHT)
+        pygame.draw.rect(surface, COLOR_BUTTON, self._clock_rect, border_radius=4)
+        label = self.font.render(
+            f"Clock: {'24-hour' if clock_24h else '12-hour (AM/PM)'}",
+            True, COLOR_BUTTON_TEXT)
+        surface.blit(label, label.get_rect(center=self._clock_rect.center))
+        y += self.BUTTON_HEIGHT + self.ROW_GAP
+
+        self._line_track, y = self._slider(surface, x, y, width,
+                                           "Line weight", line_weight, self.LINE_RANGE)
+        self._width_track, y = self._slider(surface, x, y, width,
+                                            "Road width", width_scale, self.WIDTH_RANGE)
+        return y
+
+    def _slider(self, surface, x, y, width, label, value, rng):
+        lbl = self.font.render(f"{label}: x{value:.1f}", True, COLOR_SIDEBAR_TEXT)
+        surface.blit(lbl, (x, y))
+        y += lbl.get_height() + 2
+        track = pygame.Rect(x, y, width, self.SLIDER_HEIGHT)
+        mid = y + self.SLIDER_HEIGHT // 2
+        pygame.draw.line(surface, COLOR_BUTTON, (x, mid), (x + width, mid), 4)
+        t = max(0.0, min(1.0, (value - rng[0]) / (rng[1] - rng[0])))
+        knob = pygame.Rect(0, 0, self.KNOB_W, self.SLIDER_HEIGHT)
+        knob.center = (int(x + t * width), mid)
+        pygame.draw.rect(surface, COLOR_BUTTON_ACTIVE, knob, border_radius=3)
+        return track, y + self.SLIDER_HEIGHT + self.ROW_GAP
+
+    def _value_at(self, track, rng, pos):
+        t = max(0.0, min(1.0, (pos[0] - track.x) / max(1, track.width)))
+        return round((rng[0] + t * (rng[1] - rng[0])) * 10) / 10    # step 0.1
+
+    def value_for(self, which, pos):
+        if which == "line":
+            return self._value_at(self._line_track, self.LINE_RANGE, pos)
+        return self._value_at(self._width_track, self.WIDTH_RANGE, pos)
+
+    def handle_click(self, pos):
+        if self._clock_rect and self._clock_rect.collidepoint(pos):
+            return "clock"
+        if self._line_track and self._line_track.inflate(0, 14).collidepoint(pos):
+            self._dragging = "line"
+            return "line"
+        if self._width_track and self._width_track.inflate(0, 14).collidepoint(pos):
+            self._dragging = "width"
+            return "width"
+        return None
+
+    def handle_motion(self, pos):
+        """While dragging a slider, return (which, value), else None."""
+        if self._dragging:
+            return (self._dragging, self.value_for(self._dragging, pos))
+        return None
+
+    def release(self):
+        self._dragging = None
+
+    @property
+    def dragging(self):
+        return self._dragging is not None
+
+
 class Sidebar:
-    """Draws the toolbar + snap-mode panel + scrollable instructions panel."""
+    """Draws the toolbar + snap-mode panel + simulation panel + scrollable
+    instructions panel."""
 
     def __init__(self, surface, font, header_font, toolbar):
         self.surface = surface
@@ -662,11 +1163,22 @@ class Sidebar:
         self.header_font = header_font
         self.toolbar = toolbar
         # Snap Mode overlay UI: lightweight radio panel below the
-        # action buttons. Pure UI -- mode state lives in SnapModeController.
+        # action buttons. Pure UI; mode state lives in SnapModeController.
         self.snap_panel = SnapModePanel(font, header_font)
+        # Simulation controls (trips/paths toggles + concurrency slider).
+        self.sim_panel = SimPanel(font, header_font)
+        # Building-type picker (only shown while the Building tool is active).
+        self.building_panel = BuildingPanel(font, header_font)
+        # Placement-grid controls (only shown for the Node/Road tools).
+        self.grid_panel = GridPanel(font, header_font)
+        # Settings (always shown): clock format, future global options.
+        self.settings_panel = SettingsPanel(font, header_font)
 
     def draw(self, rect, current_tool, status_message="", scroll=0, context_hint="",
-             hovered=None, snap_mode=SNAP_AUTO):
+             hovered=None, snap_mode=SNAP_AUTO, trips_on=False, paths_on=True,
+             trips_value=TRIPS_AT_ONCE_DEFAULT, active_building_type="House",
+             grid_enabled=False, grid_size=GRID_SIZE_DEFAULT, clock_24h=True,
+             mouse_pos=None, line_weight=1.0, width_scale=1.0):
         pygame.draw.rect(self.surface, COLOR_SIDEBAR_BG, rect)
 
         self.toolbar.draw(self.surface, rect, current_tool, hovered=hovered)
@@ -674,6 +1186,14 @@ class Sidebar:
         x = rect.x + 16
         y = self.toolbar.full_bottom(rect) + 4
         y = self.snap_panel.draw(self.surface, rect, y, snap_mode) + 10
+        y = self.sim_panel.draw(self.surface, rect, y, trips_on=trips_on,
+                                paths_on=paths_on, trips_value=trips_value) + 8
+        y = self.settings_panel.draw(self.surface, rect, y, clock_24h,
+                                     line_weight, width_scale) + 8
+        if current_tool == TOOL_BUILDING:
+            y = self.building_panel.draw(self.surface, rect, y, active_building_type) + 8
+        if current_tool in (TOOL_NODE, TOOL_ROAD):
+            y = self.grid_panel.draw(self.surface, rect, y, grid_enabled, grid_size) + 8
 
         active_label = TOOL_LABELS.get(current_tool, current_tool)
         active_surf = self.header_font.render(f"Active Tool: {active_label}", True, COLOR_SIDEBAR_HEADER)
@@ -714,6 +1234,28 @@ class Sidebar:
         if hovered is not None:
             self._draw_tooltip(rect, hovered)
 
+        # Icon-only panel buttons have no text, so describe them on hover.
+        if mouse_pos is not None:
+            self._panel_tooltip(self.sim_panel._trips_rect, mouse_pos,
+                                "Trips", "Start / stop the daily trip simulation")
+
+    def _panel_tooltip(self, anchor_rect, mouse_pos, title, desc):
+        """A small two-line hover popup for a non-toolbar (panel) button,
+        anchored under `anchor_rect`. No-op unless the mouse is over it."""
+        if anchor_rect is None or not anchor_rect.collidepoint(mouse_pos):
+            return
+        surfs = [self.header_font.render(title, True, COLOR_SIDEBAR_HEADER),
+                 self.font.render(desc, True, COLOR_SIDEBAR_TEXT)]
+        width = max(s.get_width() for s in surfs) + 16
+        height = sum(s.get_height() for s in surfs) + 12
+        panel = pygame.Rect(anchor_rect.left, anchor_rect.bottom + 4, width, height)
+        pygame.draw.rect(self.surface, COLOR_TOOLTIP_BG, panel, border_radius=4)
+        pygame.draw.rect(self.surface, COLOR_TOOLTIP_BORDER, panel, 1, border_radius=4)
+        ty = panel.y + 6
+        for s in surfs:
+            self.surface.blit(s, (panel.x + 8, ty))
+            ty += s.get_height()
+
     def _draw_tooltip(self, sidebar_rect, hovered):
         kind, item_id = hovered
         info = TOOLTIPS.get(item_id)
@@ -741,7 +1283,7 @@ class Sidebar:
 class ScaleBar:
     """
     Bottom-left, screen-fixed map scale bar (feet). Depends only on
-    camera.zoom -- never on camera position, window size beyond drawing
+    camera.zoom, never on camera position, window size beyond drawing
     position, or world data. Picks the largest "clean" foot value from
     SCALE_BAR_VALUES_FT whose rendered width fits within SCALE_BAR_MAX_PX.
     """
@@ -810,86 +1352,58 @@ def _normalize2(dx, dy):
     return (dx / length, dy / length)
 
 
-def _fillet_points(point_a, tangent_a, point_b, tangent_b, node_pos, samples=5):
-    """Cubic-Bezier fillet between two edge points, tangent-continuous with
-    each road's edge direction at the junction. `tangent_a`/`tangent_b`
-    point OUTWARD (back into each road, away from the node), so the curve
-    leaves/arrives matching the real road edge directions instead of a
-    straight chord. The curve's size scales with the wedge angle between
-    the two roads: wide corners get a full sweeping curve, tight corners a
-    proportionally smaller one, degrading continuously to the straight
-    chord as the wedge closes. `node_pos` (the junction node) fixes which
-    way the curve bows: both control points are forced onto the node's
-    side of the chord, so the fillet always faces INTO the junction --
-    a Bezier never leaves the convex hull of its endpoints and control
-    points, so it can't bulge past the chord on the outward side. Returns
-    interior points only (excludes the endpoints)."""
+# Junction-corner bow strength: peak control-point offset as a fraction of
+# the half-chord, reached at the angular extremes (a fully closed convex
+# wedge and a fully open reflex gap). Larger = deeper scallops / taller flares.
+FILLET_BOW = 0.55
+
+
+def _fillet_points(point_a, point_b, node_pos, sector, samples=6):
+    """Corner edge between two adjacent road edge points at a junction. The
+    curvature is set by `sector`: the corner's angular span in radians (the
+    CCW gap between the two roads' outward directions, 0..2*pi), which is what
+    distinguishes a convex corner from a reflex one (the dot product between
+    tangents cannot: a 120 deg convex corner and a 240 deg reflex corner
+    have the same tangent angle):
+
+        sector < 180 deg (convex, incl. right angles): concave, bows INTO the
+            junction; deeper as the corner sharpens, fading to flat at 180.
+        sector = 180 deg (straight-through): flat.
+        sector > 180 deg (reflex gap): convex, bows OUTWARD away from the
+            node, growing as the gap opens past 180.
+
+    One linear law does all of it: the perpendicular bow is half_chord *
+    FILLET_BOW * (pi - sector)/pi, positive (inward) for convex, negative
+    (outward) for reflex, zero at 180 deg. A symmetric quadratic offset
+    perpendicular to the chord, so it can never self-intersect. `node_pos`
+    only fixes which perpendicular is "inward". Returns interior points only
+    (endpoints excluded)."""
     chord = (point_b[0] - point_a[0], point_b[1] - point_a[1])
-    half_chord = math.hypot(chord[0], chord[1]) * 0.5
-    node_side = chord[0] * (node_pos[1] - point_a[1]) - chord[1] * (node_pos[0] - point_a[0])
-
-    # Orient each tangent: both +tangent and -tangent are valid edge
-    # directions, and the sign decides which side of the chord the control
-    # point lands on -- i.e. which way the curve bows. Primary criterion:
-    # the perpendicular component must point toward the NODE side of the
-    # chord, so the fillet is concave into the junction (a dot-with-chord
-    # heuristic alone gets this wrong when the edge is perpendicular to
-    # the chord, e.g. asymmetric-width corners). Tie-break, when the
-    # tangent is parallel to the chord (or the node sits on it): point
-    # along the chord travel direction so the curve doesn't loop backward.
-    def _oriented(t, fwd):
-        side = chord[0] * t[1] - chord[1] * t[0]
-        if abs(side) > 1e-9 and abs(node_side) > 1e-9:
-            keep = (side > 0) == (node_side > 0)
-        else:
-            keep = (t[0] * fwd[0] + t[1] * fwd[1]) >= 0
-        return t if keep else (-t[0], -t[1])
-
-    ta = _oriented(tangent_a, chord)
-    tb = _oriented(tangent_b, (-chord[0], -chord[1]))
-
-    # Wedge angle between the two roads at this corner, from the oriented
-    # tangents: pi (180 deg, curve runs straight through) down to 0 (fully
-    # closed wedge). The control-point distance scales linearly with it,
-    # so the tighter the corner, the smaller the curb-return curve. This
-    # also keeps near-parallel converging edges (the old loop/gap hazard)
-    # safe: their control points collapse onto the endpoints and the curve
-    # hugs the straight chord instead of looping. The continuous scaling
-    # replaces the old hard dot-product cutoff at 90 degrees, so corners of
-    # a symmetric cross can no longer flip looks on float noise.
-    dot = max(-1.0, min(1.0, ta[0] * tb[0] + ta[1] * tb[1]))
-    wedge = math.acos(dot)
-    scale = wedge / math.pi
-    if scale < 1e-3:
+    clen = math.hypot(chord[0], chord[1])
+    if clen < 1e-9:
         return []
-    d = half_chord * scale
 
-    c1 = (point_a[0] + ta[0] * d, point_a[1] + ta[1] * d)
-    c2 = (point_b[0] + tb[0] * d, point_b[1] + tb[1] * d)
+    # (pi - sector)/pi: +1 fully-closed convex .. 0 at 180 .. -1 fully-open reflex.
+    bow_scale = (math.pi - sector) / math.pi
+    if abs(bow_scale) < 1e-3:
+        return []                                        # straight-through -> flat
 
-    # No-loop guarantee: the curve cannot self-intersect if it advances
-    # monotonically along the chord, which holds when neither control
-    # displacement has a backward chord component. Node-side orientation
-    # can demand a backward-pointing tangent when facing-in and tangent-
-    # continuity conflict (sharp/acute corners with skewed widths); strip
-    # only the backward chord-parallel part and keep the inward
-    # perpendicular part, so the curve still bows into the junction but
-    # provably never doubles back into a loop. The correction is
-    # continuous: it vanishes as the tangent rotates back to forward.
-    if half_chord > 1e-9:
-        ux, uy = chord[0] / (2 * half_chord), chord[1] / (2 * half_chord)
-        back_a = ta[0] * ux + ta[1] * uy
-        if back_a < 0:
-            c1 = (c1[0] - ux * back_a * d, c1[1] - uy * back_a * d)
-        back_b = -(tb[0] * ux + tb[1] * uy)  # tb should run AGAINST the chord
-        if back_b < 0:
-            c2 = (c2[0] + ux * back_b * d, c2[1] + uy * back_b * d)
+    # Unit perpendicular to the chord, oriented toward the node ("inward").
+    perp = (-chord[1] / clen, chord[0] / clen)
+    to_node = (node_pos[0] - point_a[0], node_pos[1] - point_a[1])
+    if perp[0] * to_node[0] + perp[1] * to_node[1] < 0:
+        perp = (-perp[0], -perp[1])
+
+    bow = (clen * 0.5) * FILLET_BOW * bow_scale          # >0 inward, <0 outward
+    mx, my = (point_a[0] + point_b[0]) * 0.5, (point_a[1] + point_b[1]) * 0.5
+    ctrl = (mx + perp[0] * bow, my + perp[1] * bow)
+
     pts = []
     for i in range(1, samples):
         t = i / samples
         mt = 1 - t
-        x = (mt ** 3) * point_a[0] + 3 * (mt ** 2) * t * c1[0] + 3 * mt * (t ** 2) * c2[0] + (t ** 3) * point_b[0]
-        y = (mt ** 3) * point_a[1] + 3 * (mt ** 2) * t * c1[1] + 3 * mt * (t ** 2) * c2[1] + (t ** 3) * point_b[1]
+        x = mt * mt * point_a[0] + 2 * mt * t * ctrl[0] + t * t * point_b[0]
+        y = mt * mt * point_a[1] + 2 * mt * t * ctrl[1] + t * t * point_b[1]
         pts.append((x, y))
     return pts
 
@@ -923,7 +1437,7 @@ def _segment_intersection(a1, a2, b1, b2):
 # ----------------------------------------------------------------------
 # Watchdog: read-only geometry diagnostics. Detects suspicious geometry
 # (crossings without nodes, trims that overflow a road's length, degenerate
-# profile widths) and reports it for visualization -- it does NOT modify or
+# profile widths) and reports it for visualization; it does NOT modify or
 # fix anything.
 # ----------------------------------------------------------------------
 
@@ -998,7 +1512,7 @@ def detect_geometry_issues(network):
 def _build_junction_polygon(entries, node_pos):
     """Merge each connected road's near-end edge pair into one junction
     polygon, ordered by each road's outward tangent angle (NOT by raw point
-    angle -- with >=4 roads a road's own left/right edge points can be on
+    angle; with >=4 roads a road's own left/right edge points can be on
     opposite sides of the node, so sorting points directly produces a
     self-intersecting polygon).
 
@@ -1008,11 +1522,10 @@ def _build_junction_polygon(entries, node_pos):
 
     Going counter-clockwise by outward-tangent angle, road i contributes its
     own chord [right_i, left_i], then fills the gap to the next road's
-    right_(i+1) point with a tangent-continuous Bezier fillet whose size
-    scales with the wedge angle between the two roads: wide corners curve
-    gently, tight/acute corners get a proportionally smaller curve that
-    degrades continuously into a straight join as the wedge closes (see
-    _fillet_points).
+    right_(i+1) point with a Bezier fillet whose shape is set by that corner's
+    angular span (the CCW gap to the next road): convex corners (< 180 deg)
+    bow inward, the straight-through (180 deg) is flat, and reflex gaps
+    (> 180 deg) bow outward (see _fillet_points).
 
     Returns (polygon_points, edge_lines) where edge_lines is
     [(curve_points, color), ...] for the connectors only."""
@@ -1029,15 +1542,69 @@ def _build_junction_polygon(entries, node_pos):
         # The road geometry feeding these entries has already been trimmed
         # back (in road_trim_at_node) by an extra curb-return radius beyond
         # the bare carriageway/shoulder edge, so a["left"] and b["right"]
-        # are themselves the curve's start/end points -- no further
+        # are themselves the curve's start/end points, with no further
         # pullback is needed. A tangent-continuous Bezier fillet bridges
         # them directly, replacing the straight segment entirely (the
         # straight boundary geometry simply doesn't extend past these
         # points anymore).
-        fillet = _fillet_points(a["left"], a["outward"], b["right"], b["outward"], node_pos)
+        # Corner's angular span: the CCW gap from road a's outward direction
+        # to road b's (0..2pi). < pi = convex corner, > pi = reflex gap --
+        # the sign that flips the fillet from concave to outward.
+        ang_a = math.atan2(a["outward"][1], a["outward"][0])
+        ang_b = math.atan2(b["outward"][1], b["outward"][0])
+        sector = (ang_b - ang_a) % (2 * math.pi)
+        fillet = _fillet_points(a["left"], b["right"], node_pos, sector)
         polygon.extend(fillet)
 
         edge_lines.append(([a["left"]] + fillet + [b["right"]], a["color"]))
+    return polygon, edge_lines
+
+
+def _is_width_taper(entries):
+    """True for a 2-road continuation whose two mouths differ in width, the
+    case that wants an S-curve width-transition surface. Equal-width bends
+    (and 3+ way junctions) are False, so they use the corner-fillet polygon."""
+    if len(entries) != 2:
+        return False
+    def mw(e):
+        return math.hypot(e["left"][0] - e["right"][0], e["left"][1] - e["right"][1])
+    return abs(mw(entries[0]) - mw(entries[1])) > 1e-3
+
+
+def _build_continuation_polygon(entries, samples=8):
+    """Asphalt band through an equal-width 2-road continuation/bend. Instead
+    of an intersection's concave corner cuts, the two roads' mouths are joined
+    edge-to-edge by tangent-continuous cubics (the SAME curves used for the
+    lane-line connectors), so the surface follows the bend smoothly with no
+    notch or overlap, and the painted edge lines sit exactly on the asphalt
+    edge. entries: two {left, right, outward, color}. Returns
+    (polygon, edge_lines)."""
+    a, b = entries
+
+    def edge_curve(p, out_p, q, out_q):
+        gap = math.hypot(q[0] - p[0], q[1] - p[1])
+        if gap < 1e-9:
+            return [p, q]
+        handle = 0.4 * gap
+        c1 = (p[0] - out_p[0] * handle, p[1] - out_p[1] * handle)   # toward node
+        c2 = (q[0] - out_q[0] * handle, q[1] - out_q[1] * handle)   # tangent to q's road
+        return sample_cubic_bezier(p, c1, c2, q, samples)
+
+    al, ar = a["left"], a["right"]
+    bl, br = b["left"], b["right"]
+    # Pair each A edge to the B edge on the same physical side (the non-
+    # crossing pairing = smaller total endpoint distance).
+    straight = (math.hypot(al[0] - bl[0], al[1] - bl[1])
+                + math.hypot(ar[0] - br[0], ar[1] - br[1]))
+    crossed = (math.hypot(al[0] - br[0], al[1] - br[1])
+               + math.hypot(ar[0] - bl[0], ar[1] - bl[1]))
+    b_for_left, b_for_right = (bl, br) if straight <= crossed else (br, bl)
+
+    side1 = edge_curve(al, a["outward"], b_for_left, b["outward"])
+    side2 = edge_curve(b_for_right, b["outward"], ar, a["outward"])
+    polygon = [ar, al] + side1 + [b_for_left, b_for_right] + side2
+    edge_lines = [([al] + side1 + [b_for_left], a["color"]),
+                  ([b_for_right] + side2 + [ar], a["color"])]
     return polygon, edge_lines
 
 
@@ -1085,7 +1652,7 @@ def _build_taper_polygon(entries):
     """Width-transition surface for a continuation node joining exactly two
     roads of different total widths. The wider road's mouth sits a token
     setback from the node at its full width; the narrower road's mouth sits
-    a taper length down its own corridor -- so the whole transition lives
+    a taper length down its own corridor, so the whole transition lives
     on the narrower road's side and the wider road never necks down before
     the node. Each long edge is a tangent-continuous S-curve between the
     corresponding mouth corners (see _taper_curve).
@@ -1113,6 +1680,8 @@ class RoadRenderer:
         self.font = font
         self.camera = camera
         self.scale_bar = ScaleBar()
+        # Larger font for the screen-fixed sim clock (top-right overlay).
+        self.clock_font = pygame.font.SysFont("monospace", 26, bold=True)
         # Hit-rects for the lane-count context menu, refreshed each draw()
         # while a road is selected: [(rect, profile_key, delta), ...].
         self.lane_menu_buttons = []
@@ -1121,6 +1690,30 @@ class RoadRenderer:
         # per path so straight-line motion at constant zoom costs nothing.
         self._sprite_images = {}
         self._sprite_rendered = {}
+
+    def _outline_px(self, world_size_ft):
+        """Outline width (screen px) for an element `world_size_ft` across,
+        mirroring the icons' ~3.8%-of-size border with a visible floor."""
+        return max(OUTLINE_MIN_PX,
+                   round(OUTLINE_RATIO * world_size_ft * self.camera.zoom))
+
+    def _line_px(self, world_size_ft, ratio):
+        """Road line width (screen px): `ratio` of the element's width, scaled
+        by Knob 1 (ROAD_LINE_WEIGHT), floored so it stays visible."""
+        return max(ROAD_LINE_MIN_PX,
+                   round(ratio * ROAD_LINE_WEIGHT * world_size_ft * self.camera.zoom))
+
+    def _draw_thick_polyline(self, color, screen_pts, width):
+        """Draw a polyline with rounded caps/joints (circles at the vertices),
+        to match the icons' rounded thick strokes (pygame lines are square)."""
+        if not screen_pts:
+            return
+        if len(screen_pts) >= 2:
+            pygame.draw.lines(self.surface, color, False, screen_pts, width)
+        if width >= 3:                       # round the joints + end caps
+            r = width // 2
+            for p in screen_pts:
+                pygame.draw.circle(self.surface, color, (int(p[0]), int(p[1])), r)
 
     def _sprite_base(self, path):
         if path not in self._sprite_images:
@@ -1227,7 +1820,7 @@ class RoadRenderer:
         points = cam.world_to_screen_list(geometry["sampled_points"])
 
         # Full road surface width (lanes + median + shoulders) comes from
-        # the RoadProfile, NOT from road.width -- the spline/edge/polygon
+        # the RoadProfile, NOT from road.width; the spline/edge/polygon
         # functions from road_geometry are unchanged, just fed a different
         # width for rendering. Preview roads have no profile; fall back to
         # their geometry's own (logical-width) polygon.
@@ -1256,18 +1849,27 @@ class RoadRenderer:
         # purely cosmetic and independent of the geometry/polygon above
         # (skipped for the ghost preview road, which has no profile/style).
         if not road.is_preview:
+            # Shoulders use the lighter palette "frame" tone (the icon's outer
+            # panel); their own curb edge becomes the dark road outline.
             for region in profile_shoulder_regions(geometry["sampled_points"], profile):
                 region_screen = cam.world_to_screen_list(region["polygon"])
-                pygame.draw.polygon(self.surface, region["color"], region_screen)
-                if profile.shoulder_type == SHOULDER_SIDEWALK:
-                    # Sidewalk-specific outline (curb edge) so the strip
-                    # reads as a distinct paved sidewalk rather than a
-                    # plain color fill.
-                    pygame.draw.polygon(self.surface, COLOR_CURB, region_screen, 1)
+                pygame.draw.polygon(self.surface, COLOR_ROAD_FRAME, region_screen)
             median = profile_median_region(geometry["sampled_points"], profile)
             if median is not None:
                 pygame.draw.polygon(self.surface, median["color"],
                                      cam.world_to_screen_list(median["polygon"]))
+
+            # Icon-style layered edges: a thin lighter rim just inside the heavy
+            # dark outline, on both carriageway/strip edges. Open polylines, so
+            # trimmed mouths stay open (the junction surface covers the seam).
+            ow = self._line_px(profile.total_width(), ROAD_OUTLINE_RATIO)
+            inset = ow / cam.zoom            # rim sits one outline-width inboard
+            rim_w = max(1, ow // 2)
+            for edge, sign in ((left, -1.0), (right, 1.0)):
+                rim = offset_polyline(edge, sign * inset)
+                self._draw_thick_polyline(COLOR_ROAD_RIM, cam.world_to_screen_list(rim), rim_w)
+            for edge in (left, right):
+                self._draw_thick_polyline(COLOR_ROAD_OUTLINE, cam.world_to_screen_list(edge), ow)
 
         # Selected road: highlight centerline, show guide lines + control point.
         if selected:
@@ -1301,7 +1903,7 @@ class RoadRenderer:
         RoadStyle. Runs entirely after road-surface rendering, so markings
         never affect or are affected by surface/intersection geometry.
 
-        All markings -- including the center line -- are trimmed back at
+        All markings (including the center line) are trimmed back at
         intersections so they terminate at the junction boundary instead of
         all roads' center lines crossing/meeting in the middle of the
         junction."""
@@ -1320,22 +1922,118 @@ class RoadRenderer:
 
     def draw_lane_markings(self, geometry, trimmed_points, profile):
         """Paint center + edge/separator lane markings from the road's
-        RoadProfile. Purely cosmetic -- reads geometry, never recomputes
+        RoadProfile. Purely cosmetic; reads geometry, never recomputes
         the spline. All markings use `trimmed_points` so every line
         (including the center line) stops at the junction boundary instead
         of meeting/crossing other roads' lines in the intersection."""
         cam = self.camera
+        # Thick palette lines (icon style): center line amber, the rest cream;
+        # width proportional to the carriageway, floored so it stays visible.
+        width_px = self._line_px(profile.carriageway_width(), ROAD_MARK_RATIO)
         for marking, offset in profile_markings(profile):
             base = trimmed_points
             if len(base) < 2:
                 continue
+            color = COLOR_ROAD_MARK_CENTER if abs(offset) < 1e-6 else COLOR_ROAD_MARK_EDGE
             line_pts = offset_polyline(base, offset) if offset else base
             for segment in marking_segments(line_pts, marking):
                 screen_pts = cam.world_to_screen_list(segment)
-                if len(screen_pts) < 2:
+                self._draw_thick_polyline(color, screen_pts, width_px)
+
+    def draw_continuation_markings(self, network, node_id):
+        """Connect the lane markings (centerline + edge/lane lines) of the two
+        roads meeting at a same-width continuation node, so painted lines flow
+        smoothly THROUGH the bend instead of stopping/kinking at the node.
+
+        Each marking gets a tangent-continuous cubic bridging the two roads'
+        trimmed mouths, tangent to each road's line (no kink), matched to the
+        same physical side in the through-travel frame (no crossing). Applies
+        to sharp folds too: a fold is trimmed back to its arc's tangent point
+        (road_trim_at_node), so the same cubic sweeps the curved bend. Skipped
+        only for width-transition (taper) nodes."""
+        roads = [r for r in network.roads_for_node(node_id) if not r.is_preview]
+        if len(roads) != 2:
+            return
+        a, b = roads
+        prof_a = get_road_profile(a)
+        prof_b = get_road_profile(b)
+        if abs(prof_a.total_width() - prof_b.total_width()) > 1e-3:
+            return  # width transition: the taper surface owns this node
+
+        node_pos = network.nodes[node_id].pos
+        cam = self.camera
+
+        def mouth_line(road, offset):
+            geom = network.geometry_for_road(road)
+            pts = _trim_polyline(
+                geom["sampled_points"],
+                network.road_trim_at_node(road, road.start_node_id),
+                network.road_trim_at_node(road, road.end_node_id))
+            line = offset_polyline(pts, offset) if abs(offset) > 1e-9 else pts
+            if len(line) < 2:
+                return None
+            # Orient so index 0 is the node end.
+            if (math.hypot(line[0][0] - node_pos[0], line[0][1] - node_pos[1]) >
+                    math.hypot(line[-1][0] - node_pos[0], line[-1][1] - node_pos[1])):
+                line = list(reversed(line))
+            return line
+
+        width_px = self._line_px(prof_a.carriageway_width(), ROAD_MARK_RATIO)
+
+        # Resolve which physical SIDE of the node each mouth sits on, in the
+        # through-travel frame (a car driving a -> b). Matching by side is
+        # exact at any bend angle; the old nearest-endpoint match crossed at
+        # sharp bends, because one road's inner edge can land closer to the
+        # OTHER road's far edge than to its near edge.
+        ca = mouth_line(a, 0.0)
+        cb = mouth_line(b, 0.0)
+        if ca is None or cb is None:
+            return
+        c0a, c0b = ca[0], cb[0]
+        din_a = _normalize2(ca[1][0] - c0a[0], ca[1][1] - c0a[1])   # node -> into a
+        din_b = _normalize2(cb[1][0] - c0b[0], cb[1][1] - c0b[1])   # node -> into b
+        travel_a = (-din_a[0], -din_a[1])   # heading as the through-car exits a
+        travel_b = din_b                    # heading as it enters b
+
+        def node_side(p, c0, heading):
+            """Signed left/right of point `p` about the centerline mouth `c0`,
+            measured along the through-travel `heading`."""
+            return heading[0] * (p[1] - c0[1]) - heading[1] * (p[0] - c0[0])
+
+        for marking, offset in profile_markings(prof_a):
+            line_a = mouth_line(a, offset)
+            if line_a is None:
+                continue
+            pa = line_a[0]
+            side_a = node_side(pa, c0a, travel_a)
+            # Pick b's line on the SAME hand of the through-travel, trying both
+            # +/- offset (b's "left" is flipped from a's when their travel
+            # senses oppose through the node).
+            offs_b = (offset,) if abs(offset) < 1e-9 else (offset, -offset)
+            line_b = None
+            for o in offs_b:
+                lb = mouth_line(b, o)
+                if lb is None:
                     continue
-                width_px = max(1, int(round(marking.thickness * cam.zoom)))
-                pygame.draw.lines(self.surface, marking.color, False, screen_pts, width_px)
+                if line_b is None:
+                    line_b = lb   # fallback if neither side matches
+                if (node_side(lb[0], c0b, travel_b) >= 0) == (side_a >= 0):
+                    line_b = lb
+                    break
+            if line_b is None:
+                continue
+            pb = line_b[0]
+            d_in = _normalize2(pa[0] - line_a[1][0], pa[1] - line_a[1][1])    # into node
+            d_out = _normalize2(line_b[1][0] - pb[0], line_b[1][1] - pb[1])   # out into b
+            gap = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
+            if gap < 1e-6:
+                continue
+            handle = 0.4 * gap
+            c1 = (pa[0] + d_in[0] * handle, pa[1] + d_in[1] * handle)
+            c2 = (pb[0] - d_out[0] * handle, pb[1] - d_out[1] * handle)
+            screen = cam.world_to_screen_list(sample_cubic_bezier(pa, c1, c2, pb, 10))
+            color = COLOR_ROAD_MARK_CENTER if abs(offset) < 1e-6 else COLOR_ROAD_MARK_EDGE
+            self._draw_thick_polyline(color, screen, width_px)
 
     def draw_decals(self, geometry, style):
         """Paint configured decals (arrows/symbols/text) along the road."""
@@ -1381,6 +2079,106 @@ class RoadRenderer:
             label = self.font.render(f"Z{zone.id}:{zone.type}", True, COLOR_DEBUG_TEXT)
             self.surface.blit(label, (cx, cy))
 
+    def draw_building(self, network, building, debug, selected=False, count=None):
+        """Draw a placed building as a category-colored footprint square,
+        sized by its BuildingType's size, with a faint connector to each
+        attached road node. `count`, if given, is the live car-occupancy shown
+        centered on the footprint. Pure UI: reads building/BuildingType data,
+        draws primitives. Never mutates the graph, never persisted."""
+        bt = BUILDING_TYPES.get(building.building_type)
+        color = (BUILDING_CATEGORY_COLORS.get(bt.category, BUILDING_DEFAULT_COLOR)
+                 if bt else BUILDING_DEFAULT_COLOR)
+        side = (BUILDING_SIZE_FT.get(bt.size, 30.0) if bt else 30.0)
+        cam = self.camera
+        cx, cy = building.pos
+        h = side / 2.0
+        corners = [(cx - h, cy - h), (cx + h, cy - h),
+                   (cx + h, cy + h), (cx - h, cy + h)]
+        screen_corners = cam.world_to_screen_list(corners)
+
+        # Axis-aligned footprint -> a rounded rect, with the icon-style dark
+        # outline (proportional width + rounded corners) to match the PNG icons.
+        xs = [p[0] for p in screen_corners]
+        ys = [p[1] for p in screen_corners]
+        rect = pygame.Rect(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+        ow = self._outline_px(side)
+        radius = max(3, round(0.12 * side * cam.zoom))
+
+        surf = pygame.Surface(self.surface.get_size(), pygame.SRCALPHA)
+        # Faint connector(s) to attached node(s), showing the road attachment.
+        for node_id in building.connection_node_ids:
+            node = network.nodes.get(node_id)
+            if node is not None:
+                pygame.draw.line(surf, (*color, 110),
+                                 cam.world_to_screen(building.pos),
+                                 cam.world_to_screen(node.pos), 2)
+        pygame.draw.rect(surf, (*color, BUILDING_FILL_ALPHA), rect, border_radius=radius)
+        pygame.draw.rect(surf, (*COLOR_OUTLINE, 255), rect, width=ow, border_radius=radius)
+        if selected:
+            pygame.draw.rect(surf, (*COLOR_NODE_SELECTED, 255), rect.inflate(4, 4),
+                             width=max(2, ow), border_radius=radius + 2)
+        self.surface.blit(surf, (0, 0))
+
+        # Live car-occupancy count, centered on the footprint (with a dark
+        # pill behind it for legibility over any color).
+        if count is not None:
+            center = cam.world_to_screen(building.pos)
+            txt = self.font.render(str(count), True, (255, 255, 255))
+            pill = txt.get_rect(center=center).inflate(8, 4)
+            pill_surf = pygame.Surface(pill.size, pygame.SRCALPHA)
+            pill_surf.fill((20, 22, 26, 190))
+            self.surface.blit(pill_surf, pill.topleft)
+            self.surface.blit(txt, txt.get_rect(center=center))
+
+        if debug:
+            label = self.font.render(building.building_type, True, COLOR_DEBUG_TEXT)
+            self.surface.blit(label, (cam.world_to_screen(building.pos)[0],
+                                      cam.world_to_screen(building.pos)[1] - 16))
+
+    def draw_building_preview(self, building_type, pos, node_pos):
+        """Translucent ghost footprint for the Building tool. When node_pos is
+        set, it would attach there (connector shown); when None, no node is in
+        range so it's dimmed with a plain outline (wouldn't attach)."""
+        bt = BUILDING_TYPES.get(building_type)
+        color = (BUILDING_CATEGORY_COLORS.get(bt.category, BUILDING_DEFAULT_COLOR)
+                 if bt else BUILDING_DEFAULT_COLOR)
+        side = (BUILDING_SIZE_FT.get(bt.size, 30.0) if bt else 30.0)
+        cam = self.camera
+        cx, cy = pos
+        h = side / 2.0
+        corners = cam.world_to_screen_list([(cx - h, cy - h), (cx + h, cy - h),
+                                            (cx + h, cy + h), (cx - h, cy + h)])
+        xs = [p[0] for p in corners]
+        ys = [p[1] for p in corners]
+        rect = pygame.Rect(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+        ow = self._outline_px(side)
+        radius = max(3, round(0.12 * side * cam.zoom))
+        surf = pygame.Surface(self.surface.get_size(), pygame.SRCALPHA)
+        if node_pos is not None:
+            pygame.draw.line(surf, (*color, 150), cam.world_to_screen(pos),
+                             cam.world_to_screen(node_pos), 2)
+            pygame.draw.rect(surf, (*color, BUILDING_PREVIEW_ALPHA), rect, border_radius=radius)
+            pygame.draw.rect(surf, (*COLOR_OUTLINE, 255), rect, width=ow, border_radius=radius)
+        else:
+            pygame.draw.rect(surf, (*color, BUILDING_PREVIEW_ALPHA // 2), rect, border_radius=radius)
+            pygame.draw.rect(surf, (150, 150, 150, 200), rect, width=1, border_radius=radius)
+        self.surface.blit(surf, (0, 0))
+
+    def draw_sim_clock(self, day, day_name, time_label):
+        """Screen-fixed day/time readout, top-right of the canvas. Drawn over
+        the world so the trip-demo clock is always visible."""
+        text = f"{day_name}  Day {day}   {time_label}"
+        surf = self.clock_font.render(text, True, COLOR_SIDEBAR_HEADER)
+        pad = 10
+        panel = pygame.Rect(0, 0, surf.get_width() + 2 * pad,
+                            surf.get_height() + 2 * pad)
+        panel.topright = (self.surface.get_width() - 12, 12)
+        bg = pygame.Surface(panel.size, pygame.SRCALPHA)
+        bg.fill((20, 22, 26, 205))
+        self.surface.blit(bg, panel.topleft)
+        pygame.draw.rect(self.surface, COLOR_TOOLTIP_BORDER, panel, 1, border_radius=6)
+        self.surface.blit(surf, (panel.x + pad, panel.y + pad))
+
     def draw_node(self, node, color, debug, ring_color=None):
         cam = self.camera
         p = cam.world_to_screen(node.pos)
@@ -1418,7 +2216,7 @@ class RoadRenderer:
         """
         Render generic, engine-provided visual instructions. The UI does
         not interpret what these mean (traffic, congestion, cars, zoning,
-        debug, ...) -- it only knows how to draw a handful of primitive
+        debug, ...); it only knows how to draw a handful of primitive
         shapes in world space, supplied as plain dicts:
 
           {"shape": "circle",  "pos": (x, y), "radius": r,
@@ -1429,7 +2227,7 @@ class RoadRenderer:
            "color": (r,g,b), "width": px}
           {"shape": "sprite",  "pos": (x, y), "heading": (dx, dy),
            "length_ft": L, "image": path}
-            -- an image whose source art points UP (head at the top),
+            is an image whose source art points UP (head at the top),
                rotated to face `heading` and scaled so its length covers
                L world feet at the current zoom (aspect preserved).
 
@@ -1489,23 +2287,67 @@ class RoadRenderer:
                     rendered = cached[2]
                 self.surface.blit(rendered, rendered.get_rect(center=p))
 
+    def draw_grid_overlay(self, grid_size):
+        """PLACEHOLDER ground grid: faint lines at the snap spacing, as a
+        visual cue for grid placement.
+
+        This is a STAND-IN for future tiled ground GRAPHICS; the intent is
+        to replace the drawing in THIS method (visual only) with real ground
+        tiles/textures later. The snap logic lives in PlacementManager and is
+        completely independent of whatever gets rendered here. Drawn as the
+        background layer, beneath everything else."""
+        cam = self.camera
+        if grid_size * cam.zoom < 6:      # too dense on-screen to be useful
+            return
+        w, h = self.surface.get_size()
+        tl = cam.screen_to_world((0, 0))
+        br = cam.screen_to_world((w, h))
+        minx, maxx = min(tl[0], br[0]), max(tl[0], br[0])
+        miny, maxy = min(tl[1], br[1]), max(tl[1], br[1])
+        x = math.floor(minx / grid_size) * grid_size
+        while x <= maxx:
+            pygame.draw.line(self.surface, COLOR_GRID,
+                             cam.world_to_screen((x, miny)),
+                             cam.world_to_screen((x, maxy)), 1)
+            x += grid_size
+        y = math.floor(miny / grid_size) * grid_size
+        while y <= maxy:
+            pygame.draw.line(self.surface, COLOR_GRID,
+                             cam.world_to_screen((minx, y)),
+                             cam.world_to_screen((maxx, y)), 1)
+            y += grid_size
+
     def draw(self, network, preview_road, preview_geometry, preview_node, preview_snapped,
              pending_start_node, selected_road, hovered_node, selected_node,
-             current_tool, debug, visual_layers=None, preview_snap_mode=None):
+             current_tool, debug, visual_layers=None, preview_snap_mode=None,
+             sim_clock=None, building_preview=None, selected_building=None,
+             building_occupancy=None, grid_enabled=False, grid_size=GRID_SIZE_DEFAULT):
         self.surface.fill(COLOR_BG)
+
+        # Background ground layer (PLACEHOLDER grid -> future ground graphics).
+        if grid_enabled:
+            self.draw_grid_overlay(grid_size)
 
         for zone in network.zones.values():
             self.draw_zone(zone, debug)
 
+        # Building footprints sit on the ground, beneath roads/nodes/overlays.
+        sel_building_id = selected_building.id if selected_building is not None else None
+        for building in network.buildings.values():
+            count = building_occupancy.get(building.id) if building_occupancy else None
+            self.draw_building(network, building, debug,
+                               selected=(building.id == sel_building_id), count=count)
+
         # Per-node collection of (left_edge_pt, right_edge_pt, surface_color)
-        # contributed by each connected road's trimmed end -- the basis for
+        # contributed by each connected road's trimmed end, the basis for
         # the lane-aware junction surface (replaces the old circular patch).
         junction_edge_points = {}
         junction_outer_points = {}
 
         for road in network.roads.values():
             geometry = network.geometry_for_road(road)
-            surface_color = COLOR_ROAD_SURFACE_SELECTED if road is selected_road else COLOR_ROAD_SURFACE
+            surface_color = (COLOR_ROAD_SURFACE_SELECTED if road is selected_road
+                             else road_surface_color(road.id))
             line_color = COLOR_ROAD_SELECTED if road is selected_road else COLOR_ROAD
 
             if not road.is_preview:
@@ -1531,8 +2373,8 @@ class RoadRenderer:
                         # OUTWARD tangent (away from the node, back into the
                         # road): rotate +90 deg for "left". left_width/
                         # right_width are each side's own offset from the
-                        # (immutable) centerline -- never a shared half-width
-                        # -- so an asymmetric profile produces an asymmetric
+                        # (immutable) centerline, never a shared half-width,
+                        # so an asymmetric profile produces an asymmetric
                         # junction edge.
                         perp = (-outward[1], outward[0])
                         left = (trim_point[0] + perp[0] * left_width, trim_point[1] + perp[1] * left_width)
@@ -1549,7 +2391,7 @@ class RoadRenderer:
                     if end_trim > 0 and len(pts) >= 2:
                         # At the end node the "outward" tangent points back
                         # toward the start (opposite of the forward
-                        # direction), which flips the perpendicular -- swap
+                        # direction), which flips the perpendicular, so swap
                         # left_width/right_width so each entry point still
                         # gets its correct (asymmetric) physical-side width.
                         outward = _normalize2(pts[-2][0] - pts[-1][0], pts[-2][1] - pts[-1][1])
@@ -1581,11 +2423,15 @@ class RoadRenderer:
                     "outward": e["outward"],
                     "color": e["outer_color"] if sw > 0 else e["color"],
                 })
-            if len(entries) == 2:
-                # 2-road continuation with differing widths: width-taper
+            if _is_width_taper(entries):
+                # 2-road continuation with DIFFERING widths: width-taper
                 # surface (S-curve edges), not a corner-fillet junction.
                 polygon, outer_edge_lines = _build_taper_polygon(outer_entries)
+            elif len(entries) == 2:
+                # Equal-width bend: smooth edge-to-edge band.
+                polygon, outer_edge_lines = _build_continuation_polygon(outer_entries)
             else:
+                # 3+ way: rounded corner-fillet polygon.
                 polygon, outer_edge_lines = _build_junction_polygon(outer_entries, network.nodes[node_id].pos)
             color = next(e["outer_color"] for e in entries if e.get("shoulder_width", 0.0) > 0)
             pygame.draw.polygon(self.surface, color, self.camera.world_to_screen_list(polygon))
@@ -1593,7 +2439,7 @@ class RoadRenderer:
             # Curb-return curves: the outer (sidewalk/shoulder) boundary
             # also gets a smooth connecting curve between each pair of
             # trimmed edges, derived the same way as the asphalt edge
-            # connectors -- giving the classic "curb wraps around the
+            # connectors, giving the classic "curb wraps around the
             # corner" look instead of a sharp/abrupt sidewalk edge.
             for curve_points, _color in outer_edge_lines:
                 screen_pts = self.camera.world_to_screen_list(curve_points)
@@ -1609,20 +2455,30 @@ class RoadRenderer:
         for node_id, entries in junction_edge_points.items():
             if len(entries) < 2:
                 continue
-            if len(entries) == 2:
+            if _is_width_taper(entries):
                 polygon, edge_lines = _build_taper_polygon(entries)
+            elif len(entries) == 2:
+                polygon, edge_lines = _build_continuation_polygon(entries)
             else:
                 polygon, edge_lines = _build_junction_polygon(entries, network.nodes[node_id].pos)
 
             screen_polygon = self.camera.world_to_screen_list(polygon)
-            pygame.draw.polygon(self.surface, COLOR_ROAD_SURFACE, screen_polygon)
+            pygame.draw.polygon(self.surface, road_surface_color(node_id), screen_polygon)
 
-            # Outer edge-line connectors: continue each road's edge marking
-            # through the junction along the same curved fillet.
-            for curve_points, color in edge_lines:
+            # Icon-style heavy dark outline along the junction's outer boundary
+            # (the fillet connectors), matching the roads' edge outline so they
+            # join into one continuous border. For true intersections (3+ roads)
+            # also lay the cream edge line along the same curve, so the painted
+            # edge lines sweep AROUND the corner instead of stopping at it.
+            mouth_w = math.hypot(entries[0]["left"][0] - entries[0]["right"][0],
+                                 entries[0]["left"][1] - entries[0]["right"][1])
+            ow = self._line_px(mouth_w, ROAD_OUTLINE_RATIO)
+            ew = self._line_px(mouth_w, ROAD_MARK_RATIO)
+            for curve_points, _color in edge_lines:
                 screen_pts = self.camera.world_to_screen_list(curve_points)
-                if len(screen_pts) >= 2:
-                    pygame.draw.lines(self.surface, color, False, screen_pts, 1)
+                self._draw_thick_polyline(COLOR_ROAD_OUTLINE, screen_pts, ow)
+                if len(entries) >= 3:
+                    self._draw_thick_polyline(COLOR_ROAD_MARK_EDGE, screen_pts, ew)
 
         # Rounded dead-end caps: nodes with exactly one connected road get a
         # circular pavement cap (radius = full profile width / 2) so the
@@ -1633,7 +2489,10 @@ class RoadRenderer:
                 radius_ft = get_road_profile(roads[0]).total_width() / 2.0
                 p = self.camera.world_to_screen(node.pos)
                 radius_px = self.camera.feet_to_pixels(radius_ft)
-                pygame.draw.circle(self.surface, COLOR_ROAD_SURFACE, p, radius_px)
+                pygame.draw.circle(self.surface, road_surface_color(roads[0].id), p, radius_px)
+                # Icon-style heavy dark outline ring around the dead-end cap.
+                ow = self._line_px(radius_ft * 2.0, ROAD_OUTLINE_RATIO)
+                pygame.draw.circle(self.surface, COLOR_ROAD_OUTLINE, p, radius_px, ow)
 
         # Road Marking Renderer pass: runs after all surfaces/junction/cap
         # patches are painted, so markings sit cleanly on top and remain
@@ -1641,6 +2500,13 @@ class RoadRenderer:
         # centerline so markings run continuously into junctions/caps.
         for road in network.roads.values():
             self.draw_road_markings(network, road, network.geometry_for_road(road))
+
+        # Continuation bends: connect the two roads' lane lines across the
+        # node so they flow through the bend (drawn after per-road markings).
+        for node_id in network.nodes:
+            if sum(1 for r in network.roads_for_node(node_id)
+                   if not r.is_preview) == 2:
+                self.draw_continuation_markings(network, node_id)
 
         # Generic engine-provided overlays (lane graph, future congestion/
         # traffic layers) render above the finished road surfaces and
@@ -1658,7 +2524,7 @@ class RoadRenderer:
             self.draw_road(network, preview_road, preview_geometry,
                             COLOR_ROAD_PREVIEW, COLOR_ROAD_PREVIEW, 140, debug)
             # Snap Mode overlay feedback: centerline drawn over the ghost
-            # preview only -- white for a straight preview, cyan for a
+            # preview only: white for a straight preview, cyan for a
             # curved one. Committed roads are rendered exactly as before.
             if preview_snap_mode is not None:
                 line_pts = self.camera.world_to_screen_list(
@@ -1688,11 +2554,19 @@ class RoadRenderer:
         self.scale_bar.draw(self.surface, self.font, self.camera,
                              self.surface.get_rect())
 
+        # Sim clock (top-right), shown while the trip demo is running.
+        if sim_clock is not None:
+            self.draw_sim_clock(sim_clock[0], sim_clock[1], sim_clock[2])
+
         # Watchdog overlay: read-only diagnostics, debug mode only. Marks
         # suspicious geometry (crossings without nodes, collapsed trims,
         # degenerate widths) WITHOUT changing any geometry.
         if debug:
             self.draw_watchdog_overlay(detect_geometry_issues(network))
+
+        # Building tool: ghost footprint following the cursor (on top).
+        if building_preview is not None:
+            self.draw_building_preview(*building_preview)
 
         # Lane-count context menu for the selected road (TOOL_SELECT only).
         self.lane_menu_buttons = []
@@ -1704,7 +2578,7 @@ class SnapSystem:
     """
     Centralized snapping: given a world position, returns the best valid
     snap position (a nearby existing node) for any placement preview.
-    Visual-only -- never mutates the graph.
+    Visual-only; never mutates the graph.
     """
 
     @staticmethod
@@ -1753,13 +2627,27 @@ class PlacementManager:
         self.curve_offset = (0.0, 0.0)
 
         # Snap Mode overlay: only consulted when building the
-        # road preview and committing a new road -- it never touches
+        # road preview and committing a new road; it never touches
         # existing roads or any other system. `last_preview_mode` mirrors
         # the most recent resolved preview mode (STRAIGHT/CURVE) purely so
         # the renderer can color the preview centerline; None when no road
         # preview is active.
         self.snap = SnapModeController()
         self.last_preview_mode = None
+
+        # Placement grid: quantize new positions to a regular spacing. Pure
+        # logic (no graphics here). Existing-node snapping takes priority;
+        # holding Alt temporarily bypasses the grid for one-off placement.
+        self.grid_enabled = False
+        self.grid_size = GRID_SIZE_DEFAULT
+
+    def snap_to_grid(self, pos):
+        """Quantize a free world position to the placement grid, unless the
+        grid is off or Alt is held (bypass). Returns pos unchanged otherwise."""
+        if not self.grid_enabled or (pygame.key.get_mods() & pygame.KMOD_ALT):
+            return pos
+        g = self.grid_size
+        return (round(pos[0] / g) * g, round(pos[1] / g) * g)
 
     def set_tool(self, tool_id):
         self.cancel()
@@ -1812,7 +2700,7 @@ class PlacementManager:
             return
 
         if config["object"] == "node":
-            self.network.add_node(*world_pos)
+            self.network.add_node(*self.snap_to_grid(world_pos))
 
         elif config["object"] == "road":
             hit_radius = NODE_HIT_RADIUS / self.camera.zoom
@@ -1846,7 +2734,7 @@ class PlacementManager:
         if it consumed the wheel event (caller should not also zoom)."""
         if self.active_tool == TOOL_ROAD and self.pending_start_node is not None:
             # In (effective) STRAIGHT snap mode the wheel can't bend the
-            # preview anyway -- let it fall through to camera zoom instead
+            # preview anyway, so let it fall through to camera zoom instead
             # of silently accumulating an invisible offset.
             mods = pygame.key.get_mods()
             effective = self.snap.effective_mode(
@@ -1876,13 +2764,14 @@ class PlacementManager:
 
         snap_target = SnapSystem.find_snap_target(
             self.network, world_pos, self.camera, self._snap_exclude_ids())
-        pos = snap_target.pos if snap_target is not None else world_pos
+        # Existing-node snap wins; otherwise fall back to the placement grid.
+        pos = snap_target.pos if snap_target is not None else self.snap_to_grid(world_pos)
         snapped = snap_target is not None
 
         if config["object"] == "road" and self.pending_start_node is not None:
             # Snap Mode overlay decides the offset the preview is built
-            # with (straight line / bezier bulge / auto), wrapping -- not
-            # replacing -- the manual wheel offset. Same geometry function
+            # with (straight line / bezier bulge / auto), wrapping (not
+            # replacing) the manual wheel offset. Same geometry function
             # as committed roads, as before.
             final_offset, resolved_mode = self._resolve_snap_offset(pos)
             self.last_preview_mode = resolved_mode
@@ -1942,10 +2831,11 @@ class InputController:
 
         self.selected_road = None
         self.selected_node = None
+        self.selected_building = None
         self.hovered_node = None
 
         # A node that was pressed but hasn't yet moved past the drag
-        # threshold -- used to distinguish a click (select/chain) from a
+        # threshold, used to distinguish a click (select/chain) from a
         # drag (move node).
         self.mousedown_node = None
         self.mousedown_pos = None
@@ -1959,6 +2849,20 @@ class InputController:
         # Traffic simulation (V key): single demo vehicle following a
         # precomputed Dijkstra lane path. Read-only on the network.
         self.traffic = TrafficSimulation(network)
+        # Destination trip demo (T key): a TripScheduler releasing trips over
+        # an accelerated day; None when the demo is off.
+        self.trip_scheduler = None
+        # Show the route overlay (path lines) under the cars (Paths toggle).
+        self.show_trip_paths = True
+        # Live cap on concurrent cars (Trips-at-once slider).
+        self.trips_at_once = TRIPS_AT_ONCE_DEFAULT
+        # Building tool: the archetype the next placed building will use.
+        self.active_building_type = BUILDING_TYPE_ORDER[0]
+        # Live per-building car occupancy while the trip demo runs
+        # ({building_id: count}); empty when the demo is off.
+        self.building_occupancy = {}
+        # Settings: clock display format (True = 24h, False = 12h AM/PM).
+        self.clock_24h = True
 
     # ------------------------------------------------------------------
     # Tool state system
@@ -1966,7 +2870,7 @@ class InputController:
     def set_tool(self, tool_id):
         if tool_id == self.current_tool:
             return
-        if tool_id not in (TOOL_SELECT, TOOL_NODE, TOOL_ROAD, TOOL_ZONE):
+        if tool_id not in (TOOL_SELECT, TOOL_NODE, TOOL_ROAD, TOOL_BUILDING, TOOL_ZONE):
             return
         if tool_id == TOOL_ZONE:
             self.status_message = "Zone tool is coming in Phase 3.1"
@@ -1978,6 +2882,7 @@ class InputController:
         self.mousedown_pos = None
         self.selected_road = None
         self.selected_node = None
+        self.selected_building = None
         self.current_tool = tool_id
         self.status_message = f"Switched to {tool_id.replace('_', ' ')}"
 
@@ -2006,12 +2911,18 @@ class InputController:
         elif event.key == pygame.K_v:
             self.status_message = self.traffic.toggle_demo_vehicle()
             print(self.status_message)
+        elif event.key == pygame.K_b:
+            self.load_test_city()
+        elif event.key == pygame.K_t:
+            self.toggle_trip_demo()
         elif event.key == pygame.K_ESCAPE:
             self.placement.cancel()
         elif event.key == pygame.K_s:
             self.save_to_file()
         elif event.key == pygame.K_l:
             self.load_from_file()
+        elif event.key in (pygame.K_DELETE, pygame.K_BACKSPACE):
+            self.delete_selected()
         elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
             # Snap Mode overlay: while the New Road tool is active, 1/2/3
             # select the snap mode (Auto/Straight/Curved). In every other
@@ -2035,6 +2946,8 @@ class InputController:
                 self._select_tool_left_down(world_pos)
             elif self.current_tool in (TOOL_NODE, TOOL_ROAD):
                 self.placement.handle_click(world_pos)
+            elif self.current_tool == TOOL_BUILDING:
+                self._place_building(world_pos)
         elif event.button == 3:
             # Right-click + drag pans the camera, in any tool.
             self.panning = True
@@ -2118,10 +3031,11 @@ class InputController:
         hit_radius = NODE_HIT_RADIUS / self.camera.zoom
         existing = self.network.node_at(*world_pos, radius=hit_radius)
         if existing is not None:
-            # Don't decide drag-vs-click yet -- motion/up resolves it.
+            # Don't decide drag-vs-click yet; motion/up resolves it.
             self.mousedown_node = existing
             self.mousedown_pos = world_pos
             self.selected_road = None
+            self.selected_building = None
             return
 
         road_threshold = 6 / self.camera.zoom
@@ -2129,11 +3043,20 @@ class InputController:
         if road is not None:
             self.selected_road = road
             self.selected_node = None
+            self.selected_building = None
+            return
+
+        building = self.network.building_at(*world_pos)
+        if building is not None:
+            self.selected_building = building
+            self.selected_road = None
+            self.selected_node = None
             return
 
         # Empty space: deselect everything.
         self.selected_road = None
         self.selected_node = None
+        self.selected_building = None
 
     def _handle_node_click(self, node):
         """A plain click (no drag) on an existing node, in TOOL_SELECT: select it."""
@@ -2144,6 +3067,37 @@ class InputController:
         else:
             self.selected_node = node
             self.selected_road = None
+            self.selected_building = None
+
+    def delete_selected(self):
+        """Delete whatever is selected (road, node, or building) in the Select
+        tool. Deleting a node cascades to its roads; any delete clears the
+        transient sim/placement state that referenced the removed objects."""
+        if self.selected_road is not None:
+            rid = self.selected_road.id
+            self.network.remove_road(rid)
+            self.selected_road = None
+            self.status_message = f"Deleted road {rid}"
+        elif self.selected_node is not None:
+            nid = self.selected_node.id
+            self.network.remove_node(nid)
+            self.selected_node = None
+            self.status_message = f"Deleted node {nid} (and its roads)"
+        elif self.selected_building is not None:
+            bid = self.selected_building.id
+            self.network.remove_building(bid)
+            self.selected_building = None
+            self.status_message = f"Deleted building {bid}"
+        else:
+            return
+        # The removed objects may be referenced by live vehicles / scheduled
+        # trips / a pending road start; clear those so nothing dangles.
+        self.traffic.reset()
+        self.trip_scheduler = None
+        self.placement.cancel()
+        self.mousedown_node = None
+        self.dragging_node = None
+        self.dragging_control_point = False
 
     # ------------------------------------------------------------------
     # Save / load
@@ -2157,7 +3111,7 @@ class InputController:
     def load_from_file(self, filepath=MAP_SAVE_PATH):
         """
         Load JSON into the active RoadNetwork instance (mutated in place,
-        so it remains the single source of truth -- no new RoadNetwork is
+        so it stays the one authoritative copy; no new RoadNetwork is
         created). Clears all transient editor/selection state since old
         node/road object references are no longer valid after the reload.
         """
@@ -2177,6 +3131,8 @@ class InputController:
         self.mousedown_pos = None
         self.hovered_node = None
         self.selected_road = None
+        self.selected_node = None
+        self.selected_building = None
 
         self.status_message = f"Loaded from {filepath}"
         print(self.status_message)
@@ -2191,6 +3147,39 @@ class InputController:
     def get_preview(self, world_pos):
         return self.placement.get_preview(world_pos)
 
+    def _building_target(self, world_pos):
+        """(node, footprint_pos) for placing/previewing a building near
+        world_pos: the road node under the cursor (generous, zoom-stable
+        radius) plus a footprint point offset off that node toward the
+        cursor (so the click side picks the side). (None, world_pos) when no
+        node is in range."""
+        node = self.network.node_at(*world_pos, radius=NODE_HIT_RADIUS / self.camera.zoom)
+        if node is None:
+            return None, world_pos
+        dx, dy = world_pos[0] - node.x, world_pos[1] - node.y
+        dist = math.hypot(dx, dy)
+        ux, uy = (0.0, -1.0) if dist < 1e-6 else (dx / dist, dy / dist)
+        return node, (node.x + ux * BUILDING_PLACE_OFFSET,
+                      node.y + uy * BUILDING_PLACE_OFFSET)
+
+    def _place_building(self, world_pos):
+        node, pos = self._building_target(world_pos)
+        if node is None:
+            self.status_message = "Building tool: click a road node to attach a building"
+            return
+        self.network.add_building(pos[0], pos[1], connection_node_ids=[node.id],
+                                  building_type=self.active_building_type)
+        self.status_message = f"Placed {self.active_building_type} on node {node.id}"
+
+    def get_building_preview(self, world_pos):
+        """Ghost preview for the Building tool: (building_type, pos, node_pos),
+        or None when the tool isn't active. node_pos is None when no node is in
+        range (free-floating ghost that wouldn't attach)."""
+        if self.current_tool != TOOL_BUILDING:
+            return None
+        node, pos = self._building_target(world_pos)
+        return (self.active_building_type, pos, node.pos if node else None)
+
     def get_context_hint(self):
         """Read-only UI hint derived from current tool/placement state."""
         if self.current_tool == TOOL_NODE:
@@ -2201,13 +3190,118 @@ class InputController:
             return "Click second node to create road (Esc to cancel)"
         if self.current_tool == TOOL_SELECT:
             if self.selected_road is not None:
-                return "Drag red dot to bend curve, scroll to nudge"
+                return "Drag red dot to bend curve, scroll to nudge; Del to delete"
             if self.selected_node is not None:
-                return "Drag node to move it"
-            return "Click a node or road to select"
+                return "Drag node to move it; Del to delete (also its roads)"
+            if self.selected_building is not None:
+                return "Building selected; Del to delete"
+            return "Click a node, road, or building to select"
+        if self.current_tool == TOOL_BUILDING:
+            return f"Click a road node to place: {self.active_building_type}"
         if self.current_tool == TOOL_ZONE:
             return "Zone tool coming soon"
         return ""
+
+    def load_test_city(self):
+        """Replace the active network's contents with the handcrafted
+        destination test city (in memory only, NOT saved over map_save.json
+        unless the user presses S). Mutates the existing RoadNetwork in place
+        so all references (placement, traffic) stay valid."""
+        src = create_test_city()
+        net = self.network
+        net.nodes = src.nodes
+        net.roads = src.roads
+        net.zones = src.zones
+        net.buildings = src.buildings
+        net._next_node_id = src._next_node_id
+        net._next_road_id = src._next_road_id
+        net._next_zone_id = src._next_zone_id
+        net._next_building_id = src._next_building_id
+
+        self.traffic.reset()
+        self.trip_scheduler = None
+        self.placement.cancel()
+        self.selected_road = None
+        self.selected_node = None
+        self.selected_building = None
+        self.hovered_node = None
+        self.status_message = ("Loaded test city (unsaved -- press T to run "
+                               "trips, S to overwrite map_save.json)")
+        print(self.status_message)
+
+    def toggle_trip_demo(self):
+        """Start/stop the destination trip demo on the current network.
+        Generates a watchable subset of the day's trips and drives them with
+        a TripScheduler; toggling off clears the cars."""
+        if self.trip_scheduler is not None:
+            self.trip_scheduler = None
+            self.traffic.reset()
+            self.building_occupancy = {}   # hide counts when the demo is off
+            self.status_message = "Trip demo: off"
+            return
+        if not self.network.buildings:
+            self.status_message = "No buildings -- press B to load the test city first"
+            return
+
+        def day_trips(day_index):
+            # day_index 0 = Monday; 5/6 = Sat/Sun (no work on weekends). Each
+            # day gets its own deterministic rng so days vary but replay the
+            # same. The scheduler calls this once per day, forever.
+            weekend = (day_index % 7) >= 5
+            return generate_trips(self.network, random.Random(DEMO_SEED + day_index),
+                                  limit=DEMO_TRIP_LIMIT, weekend=weekend)
+
+        if not day_trips(0):
+            self.status_message = "No trips could be generated for this map"
+            return
+        self.traffic.reset()
+        self.traffic.prepare_routes()
+        # Seed occupancy: homes start "full" (cars parked), everything else
+        # empty; arrivals/departures move the counts from there.
+        self.building_occupancy = {}
+        for b in self.network.buildings.values():
+            bt = BUILDING_TYPES.get(b.building_type)
+            self.building_occupancy[b.id] = (
+                bt.capacity if (bt and bt.category == RESIDENTIAL) else 0)
+        self.trip_scheduler = TripScheduler(day_trips, start_hour=DEMO_START_HOUR,
+                                             hours_per_second=DEMO_HOURS_PER_SEC)
+        self.status_message = "Trip demo: on (weekly cycle; no work Sat/Sun)"
+        print(self.status_message)
+
+    def update_traffic(self, dt):
+        """Per-frame simulation step: release any due trips, drop arrived
+        cars, then advance all vehicles. Replaces the bare traffic.update()
+        call so the scheduler and the V-key demo share one update path."""
+        if self.trip_scheduler is not None:
+            # Cull first so finished cars free up slots this frame; each
+            # arrival credits its destination building's occupancy (+1),
+            # capped at that building's capacity so counts stay in a sane
+            # 0..capacity range (the demo trip flow isn't conservation-exact).
+            for v in self.traffic.cull_arrived():
+                bid = v.dest_building_id
+                building = self.network.buildings.get(bid) if bid is not None else None
+                if building is not None:
+                    bt = BUILDING_TYPES.get(building.building_type)
+                    cap = bt.capacity if bt else self.building_occupancy.get(bid, 0) + 1
+                    self.building_occupancy[bid] = min(
+                        cap, self.building_occupancy.get(bid, 0) + 1)
+
+            def spawn(trip):
+                # Release only while under the concurrency cap. A car that
+                # actually leaves drops its origin building's occupancy (-1).
+                if len(self.traffic.vehicles) < self.trips_at_once:
+                    v = self.traffic.spawn_trip(trip.origin_node_id, trip.dest_node_id,
+                                                trip.dest_building_id)
+                    if v is not None and trip.origin_building_id is not None:
+                        self.building_occupancy[trip.origin_building_id] = max(
+                            0, self.building_occupancy.get(trip.origin_building_id, 0) - 1)
+
+            self.trip_scheduler.update(dt, spawn)
+            self.status_message = (
+                f"{self.trip_scheduler.day_name} (Day {self.trip_scheduler.day}) "
+                f"{self.trip_scheduler.clock_label(self.clock_24h)}  "
+                f"cars: {len(self.traffic.vehicles)}/{self.trips_at_once}")
+        self.traffic.update(dt)
 
     def get_visual_layers(self):
         """
@@ -2224,7 +3318,7 @@ class InputController:
         if self.show_lane_graph:
             graph = build_lane_graph(self.network)
             layers += lane_graph_visual_layers(self.network, graph)
-        layers += self.traffic.visual_layers()
+        layers += self.traffic.visual_layers(show_paths=self.show_trip_paths)
         return layers
 
 
@@ -2244,7 +3338,7 @@ def _handle_lane_menu_click(renderer, selected_road, screen_pos):
             profile_data[key] = new_value
             selected_road.data["profile"] = profile_data
             # Geometry/markings/junctions are all recomputed live from
-            # road.data each frame -- no caches to invalidate, and the
+            # road.data each frame, with no caches to invalidate, and the
             # centerline (start/end nodes + curve_offset) is untouched, so
             # the road does not move.
             return True
@@ -2261,6 +3355,148 @@ def _compute_layout(window_size):
     return canvas_rect, sidebar_rect
 
 
+# Future GitHub link target (placeholder, not opened yet).
+GITHUB_URL = "https://github.com/"  # TODO: real repo URL
+
+
+class StartScreen:
+    """Begin-simulation landing screen shown before the editor. PLACEHOLDER
+    visuals: a title and a centered column of buttons (Start, Settings,
+    Credits, GitHub, Quit). Pure UI that reports the clicked button id; the
+    caller decides what each does. Settings reuses the settings icon as a
+    stand-in for a future settings screen."""
+
+    BTN_W = 320
+    BTN_H = 48
+    BTN_GAP = 14
+
+    # (id, label); order is top-to-bottom. All placeholders for now.
+    ITEMS = [
+        ("start", "Start Simulation"),
+        ("settings", "Settings"),
+        ("credits", "Credits"),
+        ("github", "GitHub (soon)"),
+        ("quit", "Quit"),
+    ]
+
+    def __init__(self, font, header_font, title_font):
+        self.font = font
+        self.header_font = header_font
+        self.title_font = title_font
+        self.show_credits = False
+        self._rects = []          # [(id, label, rect), ...] from last draw
+        self.status = ""          # transient note (e.g. placeholder clicks)
+
+    def _layout(self, size):
+        w, h = size
+        n = len(self.ITEMS)
+        total = n * self.BTN_H + (n - 1) * self.BTN_GAP
+        x = (w - self.BTN_W) // 2
+        y = (h - total) // 2 + 40       # nudge down to leave room for the title
+        rects = []
+        for iid, label in self.ITEMS:
+            rects.append((iid, label, pygame.Rect(x, y, self.BTN_W, self.BTN_H)))
+            y += self.BTN_H + self.BTN_GAP
+        return rects
+
+    def draw(self, surface, mouse_pos):
+        w, h = surface.get_size()
+        surface.fill(COLOR_BG)
+
+        title = self.title_font.render("FLOWSCAPE", True, COLOR_SIDEBAR_HEADER)
+        surface.blit(title, title.get_rect(center=(w // 2, h // 2 - 170)))
+        sub = self.font.render("Traffic Simulation  ::  placeholder start screen",
+                               True, COLOR_SIDEBAR_TEXT)
+        surface.blit(sub, sub.get_rect(center=(w // 2, h // 2 - 134)))
+
+        self._rects = self._layout(surface.get_size())
+        for iid, label, rect in self._rects:
+            hot = rect.collidepoint(mouse_pos)
+            pygame.draw.rect(surface, COLOR_BUTTON_HOVER if hot else COLOR_BUTTON,
+                             rect, border_radius=6)
+            pygame.draw.rect(surface, COLOR_TOOLTIP_BORDER, rect, 1, border_radius=6)
+            if iid == "settings":     # settings icon placeholder, left of label
+                icon = get_icon("settings-button", rect.height - 16)
+                if icon is not None:
+                    surface.blit(icon, (rect.x + 12, rect.centery - icon.get_height() // 2))
+            ls = self.font.render(label, True, COLOR_BUTTON_TEXT)
+            surface.blit(ls, ls.get_rect(center=rect.center))
+
+        if self.status:
+            note = self.font.render(self.status, True, COLOR_SIDEBAR_TEXT)
+            surface.blit(note, note.get_rect(center=(w // 2, self._rects[-1][2].bottom + 28)))
+
+        if self.show_credits:
+            self._draw_credits(surface)
+
+    def _draw_credits(self, surface):
+        w, h = surface.get_size()
+        panel = pygame.Rect(0, 0, 460, 220)
+        panel.center = (w // 2, h // 2)
+        veil = pygame.Surface((w, h), pygame.SRCALPHA)
+        veil.fill((0, 0, 0, 150))
+        surface.blit(veil, (0, 0))
+        pygame.draw.rect(surface, COLOR_TOOLTIP_BG, panel, border_radius=8)
+        pygame.draw.rect(surface, COLOR_TOOLTIP_BORDER, panel, 1, border_radius=8)
+        lines = [("Credits", COLOR_SIDEBAR_HEADER),
+                 ("Flowscape", COLOR_SIDEBAR_TEXT),
+                 ("Design & code: Victoria Tynan", COLOR_SIDEBAR_TEXT),
+                 ("Built with pygame.", COLOR_SIDEBAR_TEXT),
+                 ("", None),
+                 ("click anywhere to close", COLOR_SIDEBAR_TEXT)]
+        y = panel.y + 24
+        for text, color in lines:
+            if text:
+                f = self.header_font if color == COLOR_SIDEBAR_HEADER else self.font
+                s = f.render(text, True, color)
+                surface.blit(s, s.get_rect(center=(panel.centerx, y)))
+            y += 30
+
+    def handle_click(self, pos):
+        """Return the clicked button id, or None. A credits overlay swallows
+        the next click (to close it)."""
+        if self.show_credits:
+            self.show_credits = False
+            return None
+        for iid, label, rect in self._rects:
+            if rect.collidepoint(pos):
+                return iid
+        return None
+
+
+def run_start_screen(screen, clock, font, header_font, title_font):
+    """Run the begin-simulation landing screen until the user picks an action.
+    Returns "start" (enter the editor) or "quit" (exit). Settings/GitHub are
+    placeholders for now (they just show a transient note)."""
+    pygame.display.set_caption("Flowscape")
+    ss = StartScreen(font, header_font, title_font)
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return "quit"
+            elif event.type == pygame.VIDEORESIZE:
+                pygame.display.set_mode((max(event.w, MIN_WINDOW_WIDTH),
+                                         max(event.h, MIN_WINDOW_HEIGHT)), pygame.RESIZABLE)
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                ss.show_credits = False
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                action = ss.handle_click(event.pos)
+                if action == "start":
+                    return "start"
+                if action == "quit":
+                    return "quit"
+                if action == "credits":
+                    ss.show_credits = True
+                    ss.status = ""
+                elif action == "settings":
+                    ss.status = "Settings: coming soon (placeholder)"
+                elif action == "github":
+                    ss.status = f"GitHub: {GITHUB_URL} (link coming soon)"
+        ss.draw(pygame.display.get_surface(), pygame.mouse.get_pos())
+        pygame.display.flip()
+        clock.tick(60)
+
+
 def main():
     pygame.init()
     window_size = (CANVAS_WIDTH + SIDEBAR_WIDTH, CANVAS_HEIGHT)
@@ -2269,6 +3505,16 @@ def main():
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("monospace", 14)
     header_font = pygame.font.SysFont("monospace", 16, bold=True)
+    title_font = pygame.font.SysFont("monospace", 48, bold=True)
+
+    # Begin-simulation landing screen first; only enter the editor on "start".
+    if run_start_screen(screen, clock, font, header_font, title_font) == "quit":
+        pygame.quit()
+        sys.exit()
+    pygame.display.set_caption("Road Editor - Phase 3")
+    # The window may have been resized on the start screen; re-sync.
+    screen = pygame.display.get_surface()
+    window_size = screen.get_size()
 
     fullscreen = False
     windowed_size = window_size
@@ -2284,12 +3530,9 @@ def main():
     toolbar = Toolbar(font)
     sidebar = Sidebar(screen, font, header_font, toolbar)
 
-    # Startup: load the previous session's map into the active network if
-    # a save file exists, otherwise start with an empty map.
-    if os.path.exists(MAP_SAVE_PATH):
-        controller.load_from_file()
-    else:
-        controller.status_message = f"No save file found, starting empty ({MAP_SAVE_PATH})"
+    # Startup: load the handcrafted test city so the editor opens on a ready
+    # map (Load Map / L still pulls the saved map_save.json on demand).
+    controller.load_test_city()
 
     running = True
     while running:
@@ -2299,6 +3542,26 @@ def main():
         world_pos = camera.screen_to_world(screen_pos)
 
         for event in pygame.event.get():
+            # While dragging the Trips-at-once slider, the sim panel owns
+            # mouse motion/release (so dragging over the canvas doesn't
+            # pan or draw).
+            if sidebar.sim_panel.dragging:
+                if event.type == pygame.MOUSEMOTION:
+                    controller.trips_at_once = sidebar.sim_panel.handle_motion(event.pos)
+                    continue
+                if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                    sidebar.sim_panel.release()
+                    continue
+            if sidebar.settings_panel.dragging:
+                if event.type == pygame.MOUSEMOTION:
+                    m = sidebar.settings_panel.handle_motion(event.pos)
+                    if m is not None:
+                        controller.status_message = set_road_knob(m[0], m[1])
+                    continue
+                if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                    sidebar.settings_panel.release()
+                    continue
+
             if event.type == pygame.QUIT:
                 running = False
 
@@ -2312,7 +3575,7 @@ def main():
                 camera.set_viewport(canvas_rect.width, canvas_rect.height)
 
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
-                # Fullscreen toggle: rendering/layout only -- camera
+                # Fullscreen toggle: rendering/layout only; camera
                 # position and zoom are untouched.
                 fullscreen = not fullscreen
                 if fullscreen:
@@ -2334,10 +3597,55 @@ def main():
                     # Snap Mode overlay panel first; falls through to the
                     # toolbar buttons if the click missed it.
                     snap_clicked = sidebar.snap_panel.handle_click(raw_screen_pos)
-                    if snap_clicked is not None:
+                    sim_clicked = (None if snap_clicked is not None
+                                   else sidebar.sim_panel.handle_click(raw_screen_pos))
+                    building_clicked = (None if (snap_clicked is not None or sim_clicked is not None)
+                                        else sidebar.building_panel.handle_click(raw_screen_pos))
+                    grid_clicked = (sidebar.grid_panel.handle_click(raw_screen_pos)
+                                    if (snap_clicked is None and sim_clicked is None
+                                        and building_clicked is None
+                                        and controller.current_tool in (TOOL_NODE, TOOL_ROAD))
+                                    else None)
+                    settings_clicked = (None if (snap_clicked or sim_clicked or building_clicked
+                                                 or grid_clicked) else
+                                        sidebar.settings_panel.handle_click(raw_screen_pos))
+                    if settings_clicked == "clock":
+                        controller.clock_24h = not controller.clock_24h
+                        controller.status_message = (
+                            f"Clock: {'24-hour' if controller.clock_24h else '12-hour (AM/PM)'}")
+                    elif settings_clicked in ("line", "width"):
+                        controller.status_message = set_road_knob(
+                            settings_clicked,
+                            sidebar.settings_panel.value_for(settings_clicked, raw_screen_pos))
+                    elif grid_clicked is not None:
+                        pm = controller.placement
+                        if grid_clicked == "toggle":
+                            pm.grid_enabled = not pm.grid_enabled
+                            controller.status_message = f"Grid snap: {'on' if pm.grid_enabled else 'off'}"
+                        else:
+                            step = -1 if grid_clicked == "size_down" else 1
+                            try:
+                                idx = GRID_SIZES_FT.index(pm.grid_size)
+                            except ValueError:
+                                idx = GRID_SIZES_FT.index(GRID_SIZE_DEFAULT)
+                            pm.grid_size = GRID_SIZES_FT[max(0, min(len(GRID_SIZES_FT) - 1, idx + step))]
+                            controller.status_message = f"Grid size: {int(pm.grid_size)} ft"
+                    elif snap_clicked is not None:
                         controller.placement.snap.set_mode(snap_clicked)
                         controller.status_message = (
                             f"Snap mode: {SNAP_MODE_LABELS[snap_clicked]}")
+                    elif building_clicked is not None:
+                        controller.active_building_type = building_clicked
+                        controller.status_message = f"Building type: {building_clicked}"
+                    elif sim_clicked is not None:
+                        if sim_clicked == "trips":
+                            controller.toggle_trip_demo()
+                        elif sim_clicked == "paths":
+                            controller.show_trip_paths = not controller.show_trip_paths
+                            controller.status_message = (
+                                f"Trip paths: {'on' if controller.show_trip_paths else 'off'}")
+                        elif sim_clicked == "slider":
+                            controller.trips_at_once = sidebar.sim_panel.value_at(raw_screen_pos)
                     else:
                         clicked = toolbar.handle_click(sidebar_rect, raw_screen_pos)
                         if clicked is not None:
@@ -2362,9 +3670,10 @@ def main():
                 controller.handle_event(event, world_pos, screen_pos)
 
         camera.update()
-        # Advance the traffic simulation by real elapsed time (ms since the
-        # previous frame's tick). No-op when no vehicle is spawned.
-        controller.traffic.update(clock.get_time() / 1000.0)
+        # Advance the simulation by real elapsed time (ms since the previous
+        # frame's tick): release due trips (trip demo), cull arrived cars, and
+        # move all vehicles. No-op when nothing is spawned.
+        controller.update_traffic(clock.get_time() / 1000.0)
 
         hovered = None if in_canvas else toolbar.handle_hover(sidebar_rect, raw_screen_pos)
 
@@ -2381,12 +3690,31 @@ def main():
             controller.debug,
             visual_layers=controller.get_visual_layers(),
             preview_snap_mode=controller.placement.last_preview_mode,
+            sim_clock=((controller.trip_scheduler.day,
+                        controller.trip_scheduler.day_name,
+                        controller.trip_scheduler.clock_label(controller.clock_24h))
+                       if controller.trip_scheduler is not None else None),
+            building_preview=controller.get_building_preview(world_pos),
+            selected_building=controller.selected_building,
+            building_occupancy=controller.building_occupancy,
+            grid_enabled=controller.placement.grid_enabled,
+            grid_size=controller.placement.grid_size,
         )
 
         sidebar.draw(sidebar_rect, controller.current_tool,
                       controller.status_message, controller.sidebar_scroll,
                       controller.get_context_hint(), hovered=hovered,
-                      snap_mode=controller.placement.snap.mode)
+                      snap_mode=controller.placement.snap.mode,
+                      trips_on=controller.trip_scheduler is not None,
+                      paths_on=controller.show_trip_paths,
+                      trips_value=controller.trips_at_once,
+                      active_building_type=controller.active_building_type,
+                      grid_enabled=controller.placement.grid_enabled,
+                      grid_size=controller.placement.grid_size,
+                      clock_24h=controller.clock_24h,
+                      mouse_pos=raw_screen_pos,
+                      line_weight=ROAD_LINE_WEIGHT,
+                      width_scale=road_style.ROAD_WIDTH_SCALE)
 
         pygame.display.flip()
         clock.tick(60)

@@ -1,0 +1,85 @@
+"""
+Handcrafted destination-system test city (the permanent fixed map).
+
+A deterministic RoadNetwork with a simple grid road network and a fixed set of
+buildings, the spec's reference city:
+
+    20 Houses, 2 Apartments, 1 School, 3 Offices, 2 Stores, 1 Park
+
+Each building references a BuildingType (destinations.BUILDING_TYPES) and is
+attached to one grid node, so destinations.generate_trips() + the existing
+traffic_sim can drive it end to end. Pure data: no rendering, no input.
+"""
+
+from destinations import generate_trips  # noqa: F401 (convenience re-export)
+
+GRID_COLS = 6
+GRID_ROWS = 5
+GRID_SPACING_FT = 300.0
+BUILDING_OFFSET_FT = 45.0   # nudge each building off its road node
+
+# building_type -> count. Sums to 29.
+CITY_BUILDINGS = [
+    ("House", 20),
+    ("Apartment", 2),
+    ("School", 1),
+    ("Large Office", 1),
+    ("Small Office", 2),
+    ("Store", 2),
+    ("Park", 1),
+]
+
+
+def _grid_node_order(grid):
+    """Deterministic node iteration: row-major by (row, col)."""
+    return [grid[(c, r)] for r in range(GRID_ROWS) for c in range(GRID_COLS)]
+
+
+def create_test_city():
+    """Build and return the fixed test-city RoadNetwork (grid roads + the
+    fixed building set, each attached to a node)."""
+    from road_editor import RoadNetwork  # runtime import: avoids a module cycle
+
+    net = RoadNetwork()
+
+    # Grid intersection nodes.
+    grid = {}
+    for r in range(GRID_ROWS):
+        for c in range(GRID_COLS):
+            grid[(c, r)] = net.add_node(c * GRID_SPACING_FT, r * GRID_SPACING_FT)
+
+    # Horizontal street segments.
+    for r in range(GRID_ROWS):
+        for c in range(GRID_COLS - 1):
+            net.add_road(grid[(c, r)].id, grid[(c + 1, r)].id)
+    # Vertical street segments.
+    for c in range(GRID_COLS):
+        for r in range(GRID_ROWS - 1):
+            net.add_road(grid[(c, r)].id, grid[(c, r + 1)].id)
+
+    # Place buildings, one per node in deterministic order, each attached to
+    # the node it sits beside.
+    nodes = _grid_node_order(grid)
+    flat = [bt for bt, count in CITY_BUILDINGS for _ in range(count)]
+    for building_type, node in zip(flat, nodes):
+        net.add_building(
+            x=node.x + BUILDING_OFFSET_FT,
+            y=node.y + BUILDING_OFFSET_FT,
+            connection_node_ids=[node.id],
+            building_type=building_type,
+        )
+
+    return net
+
+
+if __name__ == "__main__":
+    import random
+
+    net = create_test_city()
+    print(f"Test city: {len(net.nodes)} nodes, {len(net.roads)} roads, "
+          f"{len(net.buildings)} buildings")
+    trips = generate_trips(net, random.Random(0))
+    print(f"Generated {len(trips)} trips")
+    for t in trips[:8]:
+        print(f"  {t.depart_hour:5.2f}h  node {t.origin_node_id} -> "
+              f"{t.dest_node_id}  ({t.period})")

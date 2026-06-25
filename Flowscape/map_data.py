@@ -9,14 +9,15 @@ Strict separation:
 
 Only LOGICAL data is saved (positions in feet, curvature, width, lane
 count, zone boundaries, plus each object's free-form 'data' dict for future
-fields like traffic-light state). Anything derivable -- sampled points,
-control points, road polygons, edge points -- is regenerated on load via
+fields like traffic-light state). Anything derivable (sampled points,
+control points, road polygons, edge points) is regenerated on load via
 compute_road_geometry(), so the save format never needs to change when the
 geometry/rendering systems change.
 """
 
 import json
 
+from buildings import Building
 from road_geometry import Node, Road, Zone, compute_road_geometry
 
 SCHEMA_VERSION = 1
@@ -79,6 +80,32 @@ def zone_from_dict(d):
     )
 
 
+def building_to_dict(building):
+    """Save only the placed-instance facts: which type, where, and which road
+    nodes it attaches to. Category/size/capacity/hours are NOT saved; they
+    come from the BuildingType registry (destinations.BUILDING_TYPES). No
+    dynamic simulation state is saved."""
+    return {
+        "id": building.id,
+        "building_type": building.building_type,
+        "x": building.x,
+        "y": building.y,
+        "connection_node_ids": list(building.connection_node_ids),
+        "data": building.data,
+    }
+
+
+def building_from_dict(d):
+    return Building(
+        id=d["id"],
+        building_type=d.get("building_type", "House"),
+        x=d.get("x", 0.0),
+        y=d.get("y", 0.0),
+        connection_node_ids=list(d.get("connection_node_ids", [])),
+        data=d.get("data", {}),
+    )
+
+
 def map_to_dict(network):
     """Build the JSON-serializable dict for an entire RoadNetwork."""
     return {
@@ -86,6 +113,8 @@ def map_to_dict(network):
         "nodes": {str(n.id): node_to_dict(n) for n in network.nodes.values()},
         "roads": {str(r.id): road_to_dict(r) for r in network.roads.values()},
         "zones": {str(z.id): zone_to_dict(z) for z in network.zones.values()},
+        "buildings": {str(b.id): building_to_dict(b)
+                      for b in network.buildings.values()},
     }
 
 
@@ -141,7 +170,7 @@ def load_map(network, filepath):
       2. Load nodes into network.nodes, keyed by node_id.
       3. Load zones (independent polygons; no dependency on roads/nodes).
       4. Load roads, referencing nodes ONLY by start_node_id/end_node_id
-         (looked up from network.nodes -- never stored as direct
+         (looked up from network.nodes, never stored as direct
          object references in JSON).
       5. Validate the graph (missing endpoints, orphan nodes).
       6. Rebuild geometry (spline curve, control point, edges, polygon)
@@ -159,6 +188,7 @@ def load_map(network, filepath):
     network.nodes.clear()
     network.roads.clear()
     network.zones.clear()
+    network.buildings.clear()
 
     # Step 2: nodes, keyed by id.
     max_node_id = 0
@@ -181,9 +211,19 @@ def load_map(network, filepath):
         network.roads[road.id] = road
         max_road_id = max(max_road_id, road.id)
 
+    # Buildings: lightweight instances referencing the BuildingType registry.
+    # Loaded after nodes so their connection_node_ids resolve against a
+    # populated graph (the lookup itself is done by consumers, not here).
+    max_building_id = 0
+    for d in raw.get("buildings", {}).values():
+        building = building_from_dict(d)
+        network.buildings[building.id] = building
+        max_building_id = max(max_building_id, building.id)
+
     network._next_node_id = max_node_id + 1
     network._next_road_id = max_road_id + 1
     network._next_zone_id = max_zone_id + 1
+    network._next_building_id = max_building_id + 1
 
     # Step 5: validate the rebuilt graph.
     validate_network(network)

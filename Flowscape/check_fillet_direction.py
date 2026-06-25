@@ -30,8 +30,10 @@ def check_entries(entries, node_pos, label, violations):
     for i in range(n):
         a = ordered[i]
         b = ordered[(i + 1) % n]
-        fillet = road_editor._fillet_points(a["left"], a["outward"], b["right"], b["outward"],
-                                             node_pos, samples=24)
+        ang_a = math.atan2(a["outward"][1], a["outward"][0])
+        ang_b = math.atan2(b["outward"][1], b["outward"][0])
+        sector = (ang_b - ang_a) % (2 * math.pi)
+        fillet = road_editor._fillet_points(a["left"], b["right"], node_pos, sector, samples=24)
         connector = [a["left"]] + fillet + [b["right"]]
 
         ax, ay = a["left"]
@@ -41,15 +43,17 @@ def check_entries(entries, node_pos, label, violations):
         if clen < 1e-9:
             continue
 
-        # 1. faces in: no sampled point on the far side of the chord
+        # 1. faces in: convex corners (sector < 180 deg) must not bulge past
+        #    the chord on the far side. Reflex gaps (sector > 180 deg) are
+        #    SUPPOSED to bow outward now, so they're exempt.
         node_side = cx * (node_pos[1] - ay) - cy * (node_pos[0] - ax)
         worst = 0.0
         for px, py in fillet:
             s = cx * (py - ay) - cy * (px - ax)
             dist = (s / clen) * (1.0 if node_side >= 0 else -1.0)
             worst = min(worst, dist)
-        if worst < -0.05:  # > 0.6 inch outward bulge, feet units
-            violations.append(f"{label} corner {i}: fillet bulges OUTWARD by {-worst:.2f} ft "
+        if sector < math.pi - 1e-3 and worst < -0.05:  # > 0.6 inch outward bulge, feet units
+            violations.append(f"{label} corner {i}: convex fillet bulges OUTWARD by {-worst:.2f} ft "
                               f"(chord {clen:.1f} ft)")
 
         # 2. no loop: connector polyline must not self-intersect
@@ -60,14 +64,16 @@ def check_entries(entries, node_pos, label, violations):
 
     # 3. ring-level: no two corner connectors may cross each other, and no
     #    connector may cross another road's own near-end chord
-    #    [right -> left] -- either crossing reads as a loop/overlap in the
+    #    [right -> left]; either crossing reads as a loop/overlap in the
     #    drawn lane lines even when each curve alone is well-formed.
     connectors = []
     for i in range(n):
         a = ordered[i]
         b = ordered[(i + 1) % n]
-        fillet = road_editor._fillet_points(a["left"], a["outward"], b["right"], b["outward"],
-                                             node_pos, samples=24)
+        ang_a = math.atan2(a["outward"][1], a["outward"][0])
+        ang_b = math.atan2(b["outward"][1], b["outward"][0])
+        sector = (ang_b - ang_a) % (2 * math.pi)
+        fillet = road_editor._fillet_points(a["left"], b["right"], node_pos, sector, samples=24)
         connectors.append([a["left"]] + fillet + [b["right"]])
     for i in range(n):
         for j in range(i + 1, n):

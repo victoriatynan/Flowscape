@@ -2,9 +2,9 @@
 nodes joining roads of different widths.
 
 Checks, for every taper drawn:
-1. NO LOOP -- neither S-curve edge polyline self-intersects, and the two
+1. NO LOOP: neither S-curve edge polyline self-intersects, and the two
    edges never cross each other.
-2. FULL WIDTH -- the wider road's mouth chord is its full profile width
+2. FULL WIDTH: the wider road's mouth chord is its full profile width
    (the wide road never necks down before the node).
 
 Renders each scenario to test_output/taper_<name>.png for eyeballing.

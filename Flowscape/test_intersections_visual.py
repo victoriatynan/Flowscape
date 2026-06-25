@@ -93,7 +93,7 @@ def scenario_two_intersections_and_dead_end():
         rad = math.radians(angle)
         outer = net.add_node(node.x + 150 * math.cos(rad), node.y + 150 * math.sin(rad))
         net.add_road(node.id, outer.id)
-    # Dead-end stub off node b's north road end -- leave one isolated road.
+    # Dead-end stub off node b's north road end, leaving one isolated road.
     stub_a = net.add_node(0.0, -160.0)
     stub_b = net.add_node(0.0, -240.0)
     net.add_road(stub_a.id, stub_b.id)
@@ -164,7 +164,7 @@ def render_scenario(name, net, surface, font):
 
     # Every asphalt circle must be a dead-end cap: its screen position must
     # match a node with exactly ONE connected road. Any asphalt circle at an
-    # intersection node (>= 3 roads) -- or anywhere else -- is a failure.
+    # intersection node (>= 3 roads), or anywhere else, is a failure.
     failures = []
     for center, radius in rec.asphalt_circles:
         matched_dead_end = False

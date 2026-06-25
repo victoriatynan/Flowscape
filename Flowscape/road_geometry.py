@@ -5,7 +5,7 @@ Design notes:
 - Curvature is stored as a single scalar per road: the perpendicular offset
   (in pixels) of a quadratic Bezier control point from the midpoint of the
   straight line between the two endpoint nodes.
-- computeRoadGeometry() is the single source of truth for turning
+- computeRoadGeometry() is the one place that turns
   (start_pos, end_pos, curvature) into sampled points. Both the live preview
   and committed roads call this same function, so they always look identical
   and any future intersection-detection code can rely on it too.
@@ -95,6 +95,21 @@ def sample_quadratic_bezier(p0, p1, p2, sample_count=24):
     return points
 
 
+def sample_cubic_bezier(p0, p1, p2, p3, sample_count=24):
+    """Evaluate a cubic bezier at sample_count+1 evenly spaced t values.
+    With control points p1/p2 placed along the endpoint tangents, the curve
+    leaves p0 and arrives at p3 tangent-continuous with those directions."""
+    points = []
+    for i in range(sample_count + 1):
+        t = i / sample_count
+        mt = 1 - t
+        a, b, c, d = mt * mt * mt, 3 * mt * mt * t, 3 * mt * t * t, t * t * t
+        x = a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0]
+        y = a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1]
+        points.append((x, y))
+    return points
+
+
 def _normalize(dx, dy):
     length = math.hypot(dx, dy)
     if length == 0:
@@ -148,11 +163,8 @@ def compute_road_edges(sampled_points, width_ft, pixels_per_foot=PIXELS_PER_FOOT
 
 
 def compute_road_polygon(left_edge_points, right_edge_points):
-    """
-    Build a closed polygon outlining the road surface: walk the left edge
-    start->end, then the right edge end->start. Reversing the right edge
-    keeps the outline non-self-intersecting (no "bowtie").
-    """
+    """Closed outline of the road surface: left edge forward, then right edge
+    reversed (the reversal avoids a self-intersecting bowtie)."""
     return left_edge_points + list(reversed(right_edge_points))
 
 

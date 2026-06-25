@@ -2,13 +2,13 @@
 Intersection Lane-Matching (Lane Connectivity Graph).
 
 Builds a many-to-many, weighted lane-to-lane connection graph at every
-junction node, purely from direction geometry -- no manual rules, no
+junction node, purely from direction geometry, no manual rules, no
 hardcoded road logic, no per-intersection configuration.
 
 Pipeline (per node with >= 2 connected roads):
 
   1. Lane classification: every lane of every connected road contributes a
-     LaneEnd at the node -- position at the junction mouth, normalized
+     LaneEnd at the node: its position at the junction mouth, normalized
      travel-direction vector, and a role: forward lanes travel start->end,
      so at a road's END node they are INCOMING and at its START node
      OUTGOING; reverse lanes the opposite.
@@ -45,7 +45,7 @@ outgoing lane arrows plus connection curves color-coded by turn type.
 import math
 from dataclasses import dataclass
 
-from road_geometry import sample_quadratic_bezier
+from road_geometry import sample_quadratic_bezier, sample_cubic_bezier
 from road_style import get_road_profile
 
 TURN_STRAIGHT = "STRAIGHT"
@@ -76,6 +76,10 @@ COLOR_ARROW_OUT = (255, 210, 90)
 ARROW_LENGTH_FT = 7.0
 ARROW_HEAD_FT = 3.0
 CONNECTION_SAMPLES = 12
+# Cubic tangent-handle length for junction connection curves, as a fraction
+# of the straight gap between the two lane mouths. ~0.35-0.45 reads as a
+# natural curb-radius turn; larger overshoots, smaller tightens toward a kink.
+CONNECTION_HANDLE = 0.4
 
 
 @dataclass(frozen=True)
@@ -279,27 +283,31 @@ def build_lane_graph(network, score_threshold=SCORE_THRESHOLD, allow_uturns=Fals
 
 
 # ----------------------------------------------------------------------
-# Junction connection geometry: SINGLE SOURCE OF TRUTH.
+# Junction connection geometry, defined in one place.
 # ----------------------------------------------------------------------
 
 def get_connection_curve(lane_a, lane_b, node, samples=CONNECTION_SAMPLES):
-    """The one and only definition of junction connection-curve geometry.
+    """Junction connection-curve geometry, defined here so every caller agrees.
 
     Every system that needs the drivable/visible curve between an incoming
     and an outgoing lane (debug overlay, lane-graph visualization, vehicle
     junction transitions, future intersection visuals or traffic logic)
-    MUST call this -- no system may compute its own curve, or views of the
+    MUST call this; no system may compute its own curve, or views of the
     same intersection will diverge.
 
     Geometry contract (all of it lives here):
       - endpoints: the canonical junction mouth positions, lane_a.pos ->
-        lane_b.pos (LaneEnd mouths -- centerline trimmed to the junction,
+        lane_b.pos (LaneEnd mouths: the centerline trimmed to the junction,
         offset to the lane center)
-      - shape: quadratic Bezier sampled at `samples` intervals
-      - control point: currently the junction node itself, identical for
-        every turn type. Turn-specific control points (tangent-based
-        left/right/straight shaping) belong HERE when introduced, so all
-        callers pick them up at once.
+      - shape: cubic Bezier sampled at `samples` intervals, with each control
+        point pulled along that lane's TRAVEL direction; lane_a.direction
+        points into the node (incoming), lane_b.direction points out of it
+        (outgoing). So the curve leaves the arrival mouth and reaches the
+        departure mouth tangent-continuous with both lanes: no kink where the
+        connection meets a lane, straight-throughs stay straight, and turns
+        sweep. Handle length scales with the mouth-to-mouth gap.
+      - degenerate fallback: zero-length gap or a missing tangent reverts to
+        the legacy node-as-control quadratic.
 
     Pure and deterministic: same inputs -> same points; reads nothing but
     its arguments and mutates nothing.
@@ -307,8 +315,16 @@ def get_connection_curve(lane_a, lane_b, node, samples=CONNECTION_SAMPLES):
     lane_a/lane_b: LaneEnd (incoming/outgoing). node: Node or (x, y).
     Returns the sampled curve points, endpoints included.
     """
-    control = getattr(node, "pos", node)
-    return sample_quadratic_bezier(lane_a.pos, control, lane_b.pos, samples)
+    p0, p3 = lane_a.pos, lane_b.pos
+    d_in, d_out = lane_a.direction, lane_b.direction
+    dist = math.hypot(p3[0] - p0[0], p3[1] - p0[1])
+    if dist < 1e-9 or d_in == (0.0, 0.0) or d_out == (0.0, 0.0):
+        control = getattr(node, "pos", node)
+        return sample_quadratic_bezier(p0, control, p3, samples)
+    L = CONNECTION_HANDLE * dist
+    p1 = (p0[0] + d_in[0] * L, p0[1] + d_in[1] * L)
+    p2 = (p3[0] - d_out[0] * L, p3[1] - d_out[1] * L)
+    return sample_cubic_bezier(p0, p1, p2, p3, samples)
 
 
 # ----------------------------------------------------------------------

@@ -158,7 +158,7 @@ class SnapModeController:
 class SnapModePanel:
     """
     Subtle sidebar widget: a "Snap Mode" header + three radio rows
-    (Auto / Straight / Curved). Pure UI -- reports clicks, owns no editor
+    (Auto / Straight / Curved). Pure UI; reports clicks, owns no editor
     state beyond cached hit-rects from the last draw.
     """
 

@@ -13,12 +13,21 @@ existing free-form `data` dict (e.g. data["style"] = {...}), so it rides
 along with map_data.py's save/load without any schema changes (data is
 already saved/loaded as an opaque dict).
 
-Nothing here is required for a road to render -- DEFAULT_STYLE is used
+Nothing here is required for a road to render; DEFAULT_STYLE is used
 whenever a road has no "style" entry.
 """
 
 import math
-from dataclasses import dataclass, field, fields, asdict
+from dataclasses import dataclass, field, fields, asdict, replace
+
+# ----------------------------------------------------------------------
+# KNOB 2: ROAD WIDTH SCALE.
+# Global multiplier on every road's physical width. Applied at the single
+# shared source (get_road_profile), so the renderer, the cars (lane geometry),
+# and the junctions all read the scaled width and stay aligned. 1.0 = true
+# scale; raise it (e.g. 1.5, 2.0) to make roads wider so thick lines fit.
+# ----------------------------------------------------------------------
+ROAD_WIDTH_SCALE = 2.6
 
 
 # ----------------------------------------------------------------------
@@ -81,7 +90,7 @@ class Decal:
 class RoadStyle:
     """
     Full visual description of a road. Independent of `Road.width`
-    (logical, in feet) -- `lane_width_scale` only affects how lane
+    (logical, in feet); `lane_width_scale` only affects how lane
     markings are spaced/drawn, never the road polygon.
     """
     lane_width_scale: float = 1.0
@@ -229,15 +238,15 @@ def marking_segments(points, marking):
 # Road profile system
 # ----------------------------------------------------------------------
 #
-# A RoadProfile describes the *full* cross-section of a road -- lanes,
-# center/edge markings, shoulders, and an optional median -- in feet.
+# A RoadProfile describes the *full* cross-section of a road (lanes,
+# center/edge markings, shoulders, and an optional median) in feet.
 # `RoadProfile.total_width()` is the real on-screen road width (lanes +
 # median + shoulders); the renderer uses this (via compute_road_edges /
 # compute_road_polygon from road_geometry, unchanged) to build the actual
 # road surface polygon, instead of only drawing the centerline.
 #
 # Like RoadStyle, a profile is opaque config stored under
-# road.data["profile"] -- it never touches the graph or spline geometry.
+# road.data["profile"]; it never touches the graph or spline geometry.
 
 SHOULDER_NONE = "none"
 SHOULDER_MACADAM = "macadam"   # narrow (e.g. 1 ft) gravel/dirt shoulder
@@ -273,7 +282,7 @@ EDGE_LINE_PRESETS = {
 #
 # A road's cross-section is a series of strips (sidewalk, shoulder, lane,
 # lane, ...) separated by BOUNDARIES. Each boundary has exactly one style,
-# drawn exactly once -- this replaces the old per-lane marking generation
+# drawn exactly once. This replaces the old per-lane marking generation
 # (which could produce duplicate/overlapping lines as lane counts change).
 #
 # Boundary style names are plain strings stored in RoadProfile so they can
@@ -354,7 +363,7 @@ class RoadProfile:
     def left_width(self):
         """Distance from the centerline to the left-side carriageway edge
         (median half + left/forward lanes). The centerline itself never
-        moves -- only this offset changes when left-side lanes change."""
+        moves; only this offset changes when left-side lanes change."""
         return self.median_width / 2.0 + self.lanes_forward() * self.lane_width
 
     def right_width(self):
@@ -421,9 +430,17 @@ def profile_from_dict(d):
 
 
 def get_road_profile(road):
-    """Read-only accessor: returns the road's RoadProfile, or
-    DEFAULT_PROFILE if road.data has no "profile" entry."""
-    return profile_from_dict(road.data.get("profile"))
+    """Read-only accessor: returns the road's RoadProfile, or DEFAULT_PROFILE
+    if road.data has no "profile" entry. All physical widths are multiplied by
+    ROAD_WIDTH_SCALE here (the one shared place), so every consumer (renderer,
+    cars, junction geometry) scales together and stays aligned."""
+    profile = profile_from_dict(road.data.get("profile"))
+    if ROAD_WIDTH_SCALE != 1.0:
+        profile = replace(profile,
+                          lane_width=profile.lane_width * ROAD_WIDTH_SCALE,
+                          median_width=profile.median_width * ROAD_WIDTH_SCALE,
+                          shoulder_width=profile.shoulder_width * ROAD_WIDTH_SCALE)
+    return profile
 
 
 def profile_markings(profile):
@@ -432,7 +449,7 @@ def profile_markings(profile):
     profile's cross-section, derived purely from the strip layout (lane
     counts, lane width, median) and each boundary's configured style.
     Each boundary is emitted exactly once, regardless of how many lanes
-    are on either side -- no per-lane duplication.
+    are on either side, with no per-lane duplication.
 
     Cross-section, center to edge on each side:
         [median?] [lane separators]* [outer edge]
@@ -441,7 +458,7 @@ def profile_markings(profile):
     half_median = profile.median_width / 2.0
 
     # Center boundary: only meaningful when there's no median (a median is
-    # its own region, drawn by profile_median_region -- its edges aren't
+    # its own region, drawn by profile_median_region; its edges aren't
     # painted lane lines).
     if profile.median_width <= 0:
         center_style = profile.center_boundary_style or _CENTER_STYLE_ALIASES.get(
@@ -483,7 +500,7 @@ def profile_shoulder_regions(sampled_points, profile):
     color = SHOULDER_COLORS.get(profile.shoulder_type, (120, 120, 120))
     regions = []
     # Each side's shoulder is offset from the centerline by that side's own
-    # carriageway width (left_width()/right_width()) -- the centerline
+    # carriageway width (left_width()/right_width()); the centerline
     # itself is never used as a midpoint to derive a shared half-width, so
     # changing one side's lane count never shifts the other side's shoulder.
     for sign, side_width in ((1, profile.left_width()), (-1, profile.right_width())):
