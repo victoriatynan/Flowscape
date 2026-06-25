@@ -1,1 +1,5 @@
 .DS_Store
+
+# Python bytecode caches (auto-generated, machine/version specific)
+__pycache__/
+*.pyc
