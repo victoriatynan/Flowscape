@@ -141,16 +141,19 @@ def _point_along(points, from_start, distance):
     return pts[-1], (d if from_start else (-d[0], -d[1]))
 
 
-def classify_turn(in_dir, out_dir):
+def classify_turn(in_dir, out_dir, allow_uturn=True):
     """Turn type from the signed angle between travel directions. Screen
     space is y-down, so a positive cross product (rotating from in_dir
-    toward out_dir) is a clockwise rotation = a RIGHT turn."""
+    toward out_dir) is a clockwise rotation = a RIGHT turn. With
+    allow_uturn=False a near-reversal is reported as a sharp LEFT/RIGHT
+    instead of UTURN (used for the through-movement at a 2-road fold, which
+    is the road carrying on, not a U-turn)."""
     dot = max(-1.0, min(1.0, in_dir[0] * out_dir[0] + in_dir[1] * out_dir[1]))
     cross = in_dir[0] * out_dir[1] - in_dir[1] * out_dir[0]
     deviation = math.degrees(math.atan2(abs(cross), dot))
     if deviation <= STRAIGHT_MAX_DEG:
         return TURN_STRAIGHT
-    if deviation >= UTURN_MIN_DEG:
+    if allow_uturn and deviation >= UTURN_MIN_DEG:
         return TURN_UTURN
     return TURN_RIGHT if cross > 0 else TURN_LEFT
 
@@ -229,6 +232,11 @@ def build_lane_graph(network, score_threshold=SCORE_THRESHOLD, allow_uturns=Fals
                         if not r.is_preview), key=lambda r: r.id)
         if len(roads) < 2:
             continue
+        # A 2-road node is a continuation/bend: its single non-U-turn movement
+        # is the road carrying on through the node, so it must stay drivable
+        # however sharp the fold. The movement threshold below only applies at
+        # true intersections (3+ roads), where it weeds out backward turns.
+        is_continuation_node = len(roads) == 2
 
         incoming_by_road = {}
         outgoing_by_road = {}
@@ -257,11 +265,14 @@ def build_lane_graph(network, score_threshold=SCORE_THRESHOLD, allow_uturns=Fals
                 # Road-level movement filter: cosine similarity between
                 # representative travel directions. U-turn movements are
                 # near-opposite by construction, so they bypass the
-                # threshold when explicitly allowed.
+                # threshold when explicitly allowed; the through-movement at a
+                # continuation node bypasses it too (a sharp fold reads as
+                # near-opposite but is still the road carrying on).
                 din = in_lanes[0].direction
                 dout = out_lanes[0].direction
                 movement_score = din[0] * dout[0] + din[1] * dout[1]
-                if not is_uturn_movement and movement_score <= score_threshold:
+                if (not is_uturn_movement and not is_continuation_node
+                        and movement_score <= score_threshold):
                     continue
 
                 for i, j in _fan_pairs(len(in_lanes), len(out_lanes)):
@@ -269,7 +280,8 @@ def build_lane_graph(network, score_threshold=SCORE_THRESHOLD, allow_uturns=Fals
                     score = (src.direction[0] * dst.direction[0]
                              + src.direction[1] * dst.direction[1])
                     turn = (TURN_UTURN if is_uturn_movement
-                            else classify_turn(src.direction, dst.direction))
+                            else classify_turn(src.direction, dst.direction,
+                                               allow_uturn=not is_continuation_node))
                     connections.append(LaneConnection(
                         node_id=node_id, source=src, target=dst,
                         score=score, turn_type=turn))

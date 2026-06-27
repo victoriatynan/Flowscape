@@ -163,6 +163,10 @@ def main():
     cases.append(("equal_045_long", two_road_node(45, length=420.0)))
     cases.append(("mismatch_180", two_road_node(180, preset_a="residential", preset_b="highway")))
     cases.append(("mismatch_120", two_road_node(120, preset_a="residential", preset_b="highway")))
+    # Width-mismatch FOLDS (narrow into wide, < 90 deg): rounded continuation
+    # band, not the S-curve taper. Longer roads so the sharp-fold trim fits.
+    cases.append(("mismatch_fold_60", two_road_node(60, length=240.0, preset_a="residential", preset_b="highway")))
+    cases.append(("mismatch_fold_45", two_road_node(45, length=240.0, preset_a="residential", preset_b="highway")))
 
     all_failures = []
     for name, (net, cid) in cases:
