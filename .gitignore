@@ -3,3 +3,6 @@
 # Python bytecode caches (auto-generated, machine/version specific)
 __pycache__/
 *.pyc
+
+# Affinity editor lock files (transient, created while a .af file is open)
+*.af~lock~
