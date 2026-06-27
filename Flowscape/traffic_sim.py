@@ -399,6 +399,14 @@ class Vehicle:
     # Destination building id (set for scheduled trips) so a building's
     # occupancy can be credited when this vehicle arrives.
     dest_building_id: int = None
+    # Destination node id, kept so the lateral lane-change pass can recompute a
+    # valid downstream route from a newly chosen lane to the same destination
+    # (the only re-routing the sim ever does; normal traversal never reroutes).
+    dest_node_id: int = None
+    # Seconds remaining before this vehicle may consider another lane change.
+    # Set after a merge so cars commit to a lane instead of weaving; decremented
+    # by the lane-change pass each frame. Transient; not saved.
+    lane_change_cooldown: float = 0.0
     # Transient per-frame sensing result (vehicle_perception.Perception):
     # the leader ahead + gap, recomputed every frame. NEVER read by update()
     # or any movement code, and never saved -- perception only senses.
@@ -540,6 +548,9 @@ class TrafficSimulation:
         Returns (vehicle, message); vehicle is None when no path exists."""
         edges, turns, connections = build_routing_graph(self.network)
         self.intersections.rebuild()
+        # Cache the routing graph so the lane-change pass can re-route the demo
+        # car too (spawn_trip already caches; this matches that for spawn_vehicle).
+        self._edges, self._turns, self._connections = edges, turns, connections
         path = find_lane_path(edges,
                               lanes_departing_node(self.network, start_node_id),
                               lanes_arriving_node(self.network, dest_node_id))
@@ -547,7 +558,7 @@ class TrafficSimulation:
             return None, (f"No lane path from node {start_node_id} "
                           f"to node {dest_node_id}")
 
-        vehicle = self._spawn_on_path(path, connections)
+        vehicle = self._spawn_on_path(path, connections, dest_node_id=dest_node_id)
         self._valid_edges = set(turns.keys())
         if vehicle is None:
             return None, (f"Spawn blocked: node {start_node_id}'s departing "
@@ -567,14 +578,23 @@ class TrafficSimulation:
         return all(math.hypot(v.pos[0] - sx, v.pos[1] - sy) >= SPAWN_CLEARANCE_FT
                    for v in self.vehicles)
 
-    def _spawn_on_path(self, path, connections):
-        """Compile a lane path into traversal segments, create the Vehicle,
-        add it, and return it. Caller owns self._valid_edges. Shared by the
-        single-vehicle spawn_vehicle() and the batch spawn_trip(). Returns None
-        when the departing lane's start is not clear (see _spawn_point_clear)."""
+    def _compile_segments(self, path, connections, first_segment=None):
+        """Compile a lane path into the traversal segment chain
+        [{"kind": "lane"|"connection", ...}, ...]. Shared by spawn and the
+        lane-change re-route, so both produce identical lane/connection
+        geometry and validation keys.
+
+        `first_segment`, if given, REPLACES the lane segment for path[0] (the
+        lane-change pass passes a pre-built merged remainder that starts at the
+        car's current position rather than the lane start); the connection that
+        would precede path[0] is omitted, since the car is already on path[0]."""
         segments = []
         prev_lane = None
-        for lane_id in path:
+        for idx, lane_id in enumerate(path):
+            if idx == 0 and first_segment is not None:
+                segments.append(first_segment)
+                prev_lane = lane_id
+                continue
             pts = lane_polyline(self.network, lane_id)
             if prev_lane is not None:
                 # Junction transition geometry comes from the shared
@@ -594,13 +614,23 @@ class TrafficSimulation:
             segments.append({"kind": "lane", "lane_id": lane_id,
                              "points": pts, "length": _polyline_length(pts)})
             prev_lane = lane_id
+        return segments
+
+    def _spawn_on_path(self, path, connections, dest_node_id=None):
+        """Compile a lane path into traversal segments, create the Vehicle,
+        add it, and return it. Caller owns self._valid_edges. Shared by the
+        single-vehicle spawn_vehicle() and the batch spawn_trip(). Returns None
+        when the departing lane's start is not clear (see _spawn_point_clear).
+        `dest_node_id` is stored so the lane-change pass can re-route to the
+        same destination from a newly chosen lane."""
+        segments = self._compile_segments(path, connections)
 
         spawn_pos = segments[0]["points"][0]
         if not self._spawn_point_clear(spawn_pos):
             return None
 
         vehicle = Vehicle(path=path, current_lane=path[0], segments=segments,
-                          pos=spawn_pos,
+                          pos=spawn_pos, dest_node_id=dest_node_id,
                           heading=_direction_at_arc(segments[0]["points"], 0.0))
         self.vehicles.append(vehicle)
         return vehicle
@@ -626,7 +656,8 @@ class TrafficSimulation:
                               lanes_arriving_node(self.network, dest_node_id))
         if path is None:
             return None
-        vehicle = self._spawn_on_path(path, self._connections)
+        vehicle = self._spawn_on_path(path, self._connections,
+                                      dest_node_id=dest_node_id)
         if vehicle is None:   # no path, or the departing lane's start is occupied
             return None
         vehicle.dest_building_id = dest_building_id
@@ -667,8 +698,64 @@ class TrafficSimulation:
         vehicle, message = self.spawn_vehicle(start.id, dest.id)
         return f"Vehicle {start.id}->{dest.id}: {message}"
 
+    def begin_lane_change(self, vehicle, target_lane_id):
+        """Execute a lateral lane change: rebuild `vehicle`'s segments so it
+        glides onto `target_lane_id` and continues to the SAME destination,
+        recomputing the downstream route from the new lane (the only re-routing
+        the sim ever does). The merge polyline starts at the car's current
+        position, so position/heading are unchanged at the handoff -- no
+        teleport. Returns True on success.
+
+        This is the ONLY executor of a lane change; the policy (whether/which)
+        lives in vehicle_lane_change.choose_lane_change."""
+        from vehicle_lane_change import build_merge_polyline, MERGE_LEN_FT, \
+            LANE_CHANGE_COOLDOWN_S
+        goal_lanes = lanes_arriving_node(self.network, vehicle.dest_node_id)
+        new_path = find_lane_path(self._edges, [target_lane_id], goal_lanes)
+        if new_path is None:
+            return False        # safety: choose_lane_change already verified this
+        cur_seg = vehicle.segments[vehicle.seg_index]
+        new_lane_pts = lane_polyline(self.network, target_lane_id)
+        merged = build_merge_polyline(cur_seg["points"], new_lane_pts,
+                                      vehicle.seg_s, MERGE_LEN_FT)
+        first_segment = {"kind": "lane", "lane_id": target_lane_id,
+                         "points": merged, "length": _polyline_length(merged)}
+        vehicle.segments = self._compile_segments(
+            new_path, self._connections, first_segment=first_segment)
+        vehicle.path = new_path
+        vehicle.current_lane = target_lane_id
+        vehicle.path_index = 0
+        vehicle.seg_index = 0
+        vehicle.seg_s = 0.0
+        vehicle.position_along_lane = 0.0
+        vehicle.lane_change_cooldown = LANE_CHANGE_COOLDOWN_S
+        vehicle.pos = _point_at_arc(merged, 0.0)
+        vehicle.heading = _direction_at_arc(merged, 0.0)
+        return True
+
+    def _update_lane_changes(self, dt):
+        """LATERAL DECISION pass: held-up cars merge toward an emptier adjacent
+        lane. Runs after perception (needs the leader for the held-up test) and
+        before the speed-governor decision (which then recomputes desired_speed
+        on the possibly-new segments). Rewrites geometry/path only -- never
+        speed -- so Movement/Dynamics/the governor stay untouched."""
+        from vehicle_lane_change import choose_lane_change
+        if self._edges is None:
+            self.prepare_routes()
+        for vehicle in self.vehicles:
+            if vehicle.lane_change_cooldown > 0.0:
+                vehicle.lane_change_cooldown = max(
+                    0.0, vehicle.lane_change_cooldown - dt)
+            if vehicle.dest_node_id is None:
+                continue
+            goal_lanes = lanes_arriving_node(self.network, vehicle.dest_node_id)
+            target = choose_lane_change(vehicle, self.network, self._edges,
+                                        goal_lanes, self.vehicles, find_lane_path)
+            if target is not None:
+                self.begin_lane_change(vehicle, target)
+
     def update(self, dt):
-        # Driver-model pipeline -- four decoupled passes, each its own layer,
+        # Driver-model pipeline -- decoupled passes, each its own layer,
         # handing off through exactly one field:
         #
         #   0. Intersection control bookkeeping for this frame (clear per-frame
@@ -687,6 +774,11 @@ class TrafficSimulation:
         #      (vehicle_perception imports constants from this module).
         from vehicle_perception import compute_perception
         compute_perception(self.vehicles)
+        #   2.5 LANE-CHANGE (lateral decision): a held-up car may begin a smooth
+        #      merge onto an emptier adjacent lane and re-route to the same
+        #      destination. Reads perception, writes geometry/path only -- never
+        #      speed -- so the speed governor and dynamics are unaffected.
+        self._update_lane_changes(dt)
         #   3. DECISION: from perception + logical state (and a read-only view of
         #      the intersection controllers, for approach planning), set each
         #      desired_speed via the speed-governor rules (min of all proposals).
