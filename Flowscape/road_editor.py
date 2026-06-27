@@ -417,7 +417,12 @@ class RoadNetwork:
             if cos_arm > 0.0:
                 alpha = math.acos(cos_arm)               # arm angle (rad), < 90 deg
                 half = get_road_profile(road).total_width() / 2.0
-                radius = half * (1.0 + math.degrees(alpha) / 90.0)
+                # Centerline radius scales with the arm angle. The 1.25 floor
+                # (vs the bare 1.0 = half-width) keeps the inner edge radius at
+                # >= 0.25*half so the sharpest folds round into a small pocket
+                # instead of pinching to a cusp; it still reaches 2*half at the
+                # 90 deg boundary, matching the gentler continuation bends.
+                radius = half * (1.25 + 0.75 * math.degrees(alpha) / 90.0)
                 tan_half = math.tan(alpha / 2.0)
                 tangent_len = radius / tan_half if tan_half > 1e-6 else radius
                 start = self.nodes[road.start_node_id].pos
@@ -721,6 +726,11 @@ INSTRUCTIONS = [
     ("1/2/3  switch tool", COLOR_SIDEBAR_TEXT),
     ("G      lane graph viz", COLOR_SIDEBAR_TEXT),
     ("V      demo vehicle", COLOR_SIDEBAR_TEXT),
+    ("P      perception viz", COLOR_SIDEBAR_TEXT),
+    ("K      dynamics viz", COLOR_SIDEBAR_TEXT),
+    ("J      decision viz", COLOR_SIDEBAR_TEXT),
+    ("I      intersection viz", COLOR_SIDEBAR_TEXT),
+    ("", None),
     ("D      toggle debug", COLOR_SIDEBAR_TEXT),
     ("S      save map JSON", COLOR_SIDEBAR_TEXT),
     ("L      load map JSON", COLOR_SIDEBAR_TEXT),
@@ -1560,11 +1570,23 @@ def _build_junction_polygon(entries, node_pos):
     return polygon, edge_lines
 
 
-def _is_width_taper(entries):
-    """True for a 2-road continuation whose two mouths differ in width, the
-    case that wants an S-curve width-transition surface. Equal-width bends
-    (and 3+ way junctions) are False, so they use the corner-fillet polygon."""
+def _is_fold(entries):
+    """True for a 2-road node whose arms are < 90 deg apart: the two outward
+    tangents point the same general way, so it is a sharp fold rather than a
+    gentle continuation."""
     if len(entries) != 2:
+        return False
+    a, b = entries[0]["outward"], entries[1]["outward"]
+    return a[0] * b[0] + a[1] * b[1] > 0.0
+
+
+def _is_width_taper(entries):
+    """True for a 2-road CONTINUATION (>= 90 deg bend) whose two mouths differ
+    in width, the case that wants an S-curve width-transition surface. Sharp
+    folds are excluded: they take the rounded continuation band even when the
+    widths differ, since an S-curve can't follow the tight bend. Equal-width
+    bends and 3+ way junctions are False too."""
+    if len(entries) != 2 or _is_fold(entries):
         return False
     def mw(e):
         return math.hypot(e["left"][0] - e["right"][0], e["left"][1] - e["right"][1])
@@ -2230,6 +2252,10 @@ class RoadRenderer:
             is an image whose source art points UP (head at the top),
                rotated to face `heading` and scaled so its length covers
                L world feet at the current zoom (aspect preserved).
+          {"shape": "text",    "pos": (x, y), "text": str,
+           "color": (r,g,b)}
+            is a short label drawn centered at the world point, in the
+               renderer's font at a fixed pixel size (not zoom-scaled).
 
         Unknown/malformed entries are ignored. Never reads/writes the
         graph, never persisted.
@@ -2286,6 +2312,10 @@ class RoadRenderer:
                 else:
                     rendered = cached[2]
                 self.surface.blit(rendered, rendered.get_rect(center=p))
+            elif shape == "text":
+                p = cam.world_to_screen(layer["pos"])
+                label = self.font.render(str(layer.get("text", "")), True, color)
+                self.surface.blit(label, label.get_rect(center=p))
 
     def draw_grid_overlay(self, grid_size):
         """PLACEHOLDER ground grid: faint lines at the snap spacing, as a
@@ -2854,6 +2884,21 @@ class InputController:
         self.trip_scheduler = None
         # Show the route overlay (path lines) under the cars (Paths toggle).
         self.show_trip_paths = True
+        # Vehicle perception debug overlay (P key): leader links + following
+        # distances. Sensing runs every frame regardless; this only draws it.
+        self.show_perception = False
+        # Vehicle dynamics debug overlay (K key): per-car speed readout +
+        # accel/brake state. Dynamics runs every frame regardless; this only
+        # draws it.
+        self.show_dynamics = False
+        # Vehicle decision debug overlay (J key): the rule binding each car's
+        # desired_speed. Decision runs every frame regardless; this only draws
+        # it.
+        self.show_decision = False
+        # Intersection-control debug overlay (I key): controlled junctions +
+        # vehicles registered inside them. Control runs every frame regardless;
+        # this only draws it.
+        self.show_intersections = False
         # Live cap on concurrent cars (Trips-at-once slider).
         self.trips_at_once = TRIPS_AT_ONCE_DEFAULT
         # Building tool: the archetype the next placed building will use.
@@ -2911,6 +2956,22 @@ class InputController:
         elif event.key == pygame.K_v:
             self.status_message = self.traffic.toggle_demo_vehicle()
             print(self.status_message)
+        elif event.key == pygame.K_p:
+            self.show_perception = not self.show_perception
+            self.status_message = ("Perception overlay: on" if self.show_perception
+                                    else "Perception overlay: off")
+        elif event.key == pygame.K_k:
+            self.show_dynamics = not self.show_dynamics
+            self.status_message = ("Dynamics overlay: on" if self.show_dynamics
+                                    else "Dynamics overlay: off")
+        elif event.key == pygame.K_j:
+            self.show_decision = not self.show_decision
+            self.status_message = ("Decision overlay: on" if self.show_decision
+                                    else "Decision overlay: off")
+        elif event.key == pygame.K_i:
+            self.show_intersections = not self.show_intersections
+            self.status_message = ("Intersection overlay: on" if self.show_intersections
+                                    else "Intersection overlay: off")
         elif event.key == pygame.K_b:
             self.load_test_city()
         elif event.key == pygame.K_t:
@@ -3319,6 +3380,14 @@ class InputController:
             graph = build_lane_graph(self.network)
             layers += lane_graph_visual_layers(self.network, graph)
         layers += self.traffic.visual_layers(show_paths=self.show_trip_paths)
+        if self.show_perception:
+            layers += self.traffic.perception_visual_layers()
+        if self.show_dynamics:
+            layers += self.traffic.dynamics_visual_layers()
+        if self.show_decision:
+            layers += self.traffic.decision_visual_layers()
+        if self.show_intersections:
+            layers += self.traffic.intersection_visual_layers()
         return layers
 
 

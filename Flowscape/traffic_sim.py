@@ -42,10 +42,26 @@ from dataclasses import dataclass, field
 
 from lane_graph import build_lane_graph, get_connection_curve
 from road_style import get_road_profile, offset_polyline
+from vehicle_dynamics import (integrate_speed, motion_state,
+                              DEFAULT_ACCELERATION_RATE, DEFAULT_BRAKING_RATE,
+                              ACCELERATING, CRUISING, BRAKING)
+from vehicle_decision import (compute_decisions, binding_rule, approach_info,
+                              DecisionContext)
+from intersection_control import IntersectionControl
 
 UNIFORM_EDGE_COST = 1.0
+# Default cruising speed -- the desired_speed a vehicle targets when nothing is
+# slowing it down. A future decision layer will lower desired_speed below this
+# (car-following, lights); the dynamics layer ramps current_speed toward it.
 VEHICLE_SPEED_FT_S = 44.0      # ~30 mph
 VEHICLE_LENGTH_FT = 14.0       # small car, real-world scale (world is feet)
+# Spawn gating: a trip is only released onto its departing lane when the lane's
+# start point is clear of other cars by this margin. Vehicles accelerate from
+# rest, so a leader that departed a moment ago is still sitting near the start;
+# without this gate the new car lands on top of it (overlap < VEHICLE_LENGTH).
+# This is a SPAWNER concern only -- it decides WHETHER to place a car, never how
+# one moves; in-traffic spacing is the decision layer's car-following rule.
+SPAWN_CLEARANCE_FT = 2.0 * VEHICLE_LENGTH_FT
 
 # Top-down car sprite, source art pointing UP (head/windshield at the top,
 # taillights at the bottom). The first existing candidate wins: a clean
@@ -80,6 +96,35 @@ VEHICLE_COLORS = {
     STATE_BLOCKED: (255, 80, 80),
 }
 VEHICLE_RADIUS_FT = 5.0
+
+# Perception debug overlay (optional): the leader-link color encodes the
+# closing state -- warm = approaching (gap shrinking), cyan = separating,
+# gray = steady (equal speeds).
+COLOR_PERCEPTION_APPROACH = (255, 120, 90)
+COLOR_PERCEPTION_SEPARATE = (110, 180, 255)
+COLOR_PERCEPTION_STEADY = (200, 200, 200)
+
+# Dynamics debug overlay (optional): the speed-readout color encodes the
+# derived motion state -- green = accelerating, gray = cruising at target,
+# red = braking.
+DYNAMICS_STATE_COLORS = {
+    ACCELERATING: (90, 220, 120),
+    CRUISING: (210, 210, 210),
+    BRAKING: (255, 90, 90),
+}
+DYNAMICS_STATE_GLYPHS = {ACCELERATING: "^", CRUISING: "=", BRAKING: "v"}
+
+# Decision debug overlay (optional): the readout color shows which rule is
+# currently binding the desired_speed -- gray = free cruise, amber = held back
+# by the following-distance rule. New rules can add their own color here.
+DECISION_RULE_COLORS = {
+    "cruise": (170, 170, 170),
+    "follow": (255, 190, 70),
+    "approach": (255, 110, 60),     # slowing for a controlled junction ahead
+}
+COLOR_DECISION_DEFAULT = (200, 200, 200)
+# Stop-line marker / approach link for the intersection-approach overlay.
+COLOR_STOP_LINE = (235, 80, 80)
 
 
 # ----------------------------------------------------------------------
@@ -328,7 +373,20 @@ class Vehicle:
     state: str = STATE_MOVING
     pos: tuple = (0.0, 0.0)
     heading: tuple = (1.0, 0.0)      # unit travel direction (for the sprite)
-    speed: float = VEHICLE_SPEED_FT_S
+    # --- Motion state ---
+    # current_speed starts at rest; the dynamics layer ramps it toward
+    # desired_speed each frame. cruise_speed is the LOGICAL source of truth for
+    # this vehicle's free-flow target (how fast it wants to go unconstrained).
+    # desired_speed is a per-frame OUTPUT of the decision layer (a one-field
+    # handoff to dynamics, recomputed every frame -- not durable state); the
+    # decision layer is the ONLY writer of desired_speed and influences motion
+    # solely through it. accel/brake are the per-vehicle kinematic limits. The
+    # accel/brake STATE is not stored; it is derived via motion_state().
+    current_speed: float = 0.0
+    cruise_speed: float = VEHICLE_SPEED_FT_S
+    desired_speed: float = VEHICLE_SPEED_FT_S
+    acceleration_rate: float = DEFAULT_ACCELERATION_RATE
+    braking_rate: float = DEFAULT_BRAKING_RATE
     # Compiled traversal segments: [{"kind": "lane"|"connection",
     #   "lane_id", "points", "length", "node_pos"(connection only)}, ...]
     segments: list = field(default_factory=list)
@@ -337,10 +395,23 @@ class Vehicle:
     # Destination building id (set for scheduled trips) so a building's
     # occupancy can be credited when this vehicle arrives.
     dest_building_id: int = None
+    # Transient per-frame sensing result (vehicle_perception.Perception):
+    # the leader ahead + gap, recomputed every frame. NEVER read by update()
+    # or any movement code, and never saved -- perception only senses.
+    perception: object = None
+    # Transient: the intersection node id this vehicle is currently registered
+    # inside (set by movement on entering a junction connection segment, cleared
+    # on exit), or None. Bookkeeping for the intersection controller; not saved.
+    junction_node: object = None
 
-    def _enter_segment(self, index, valid_edges):
+    def _enter_segment(self, index, valid_edges, intersections):
         """Advance to segment `index`. Entering a connection segment IS the
-        node transition: validate the lane switch and update path_index."""
+        junction transition: validate the lane switch, then REQUEST PERMISSION
+        from the intersection controller before committing. Entering the lane
+        that follows a connection means we have cleared that junction, so we
+        deregister. Returns False (without advancing) if the lane switch is
+        invalid or permission is denied -- the caller then holds the vehicle at
+        the junction mouth."""
         seg = self.segments[index]
         if seg["kind"] == "connection":
             prev_lane = self.current_lane
@@ -348,17 +419,36 @@ class Vehicle:
             if (prev_lane, next_lane) not in valid_edges:
                 self.state = STATE_BLOCKED   # debug failure, vehicle stops
                 return False
+            node_id = seg["node_id"]
+            # ALL junction entry passes through the controller: ask first.
+            if not intersections.can_enter(node_id, self):
+                return False                 # denied: wait at the junction mouth
+            intersections.vehicle_enter(node_id, self)
+            self.junction_node = node_id
             self.current_lane = next_lane
             self.path_index = self.path.index(next_lane)
             self.position_along_lane = 0.0
+        elif self.junction_node is not None:
+            # Entering a lane after a connection: we have left that junction.
+            intersections.vehicle_exit(self.junction_node, self)
+            self.junction_node = None
         self.seg_index = index
         self.seg_s = 0.0
         return True
 
-    def update(self, dt, valid_edges):
+    def move(self, dt, valid_edges, intersections):
+        """MOVEMENT layer: advance along the compiled segment chain by the
+        distance current_speed covers this step, handling lane/junction
+        transitions and arrival. Path following ONLY -- it reads current_speed
+        but never changes it and knows nothing about WHY the speed is what it is
+        (that belongs to the dynamics/decision layers). Every junction entry is
+        gated by `intersections` (the IntersectionControl), so any intersection
+        type plugs in WITHOUT changing this traversal. The geometry traversal is
+        otherwise identical to the original constant-speed model; only the source
+        of `advance` differs (current_speed, set by dynamics last frame)."""
         if self.state != STATE_MOVING or not self.segments:
             return
-        advance = self.speed * dt
+        advance = self.current_speed * dt
         while advance > 0:
             seg = self.segments[self.seg_index]
             remaining = seg["length"] - self.seg_s
@@ -372,13 +462,37 @@ class Vehicle:
                     self.state = STATE_ARRIVED
                     self.position_along_lane = 1.0
                     break
-                if not self._enter_segment(self.seg_index + 1, valid_edges):
+                if not self._enter_segment(self.seg_index + 1, valid_edges, intersections):
+                    # Hard stop at the junction mouth (entry denied) or a dead
+                    # blocked state. The vehicle physically stops here, so its
+                    # speed is 0 -- movement keeps current_speed consistent with
+                    # the (lack of) motion, which also lets followers car-follow
+                    # a held vehicle correctly (a stopped leader, not a phantom
+                    # moving one). This is the one place movement writes
+                    # current_speed: a hard external stop, distinct from the
+                    # dynamics layer's smooth integration toward desired_speed.
+                    # (Decelerating SMOOTHLY before the line is a future decision
+                    # rule; this is the safety backstop.)
+                    self.seg_s = seg["length"]
+                    self.current_speed = 0.0
                     break
         seg = self.segments[self.seg_index]
         self.pos = _point_at_arc(seg["points"], self.seg_s)
         self.heading = _direction_at_arc(seg["points"], self.seg_s)
         if seg["kind"] == "lane" and seg["length"] > 0:
             self.position_along_lane = self.seg_s / seg["length"]
+
+    def integrate_dynamics(self, dt):
+        """DYNAMICS layer: ramp current_speed toward desired_speed for the next
+        movement step. A thin delegate to the pure vehicle_dynamics integrator;
+        it carries no policy and reads only this vehicle's own speed state. The
+        decision layer influences it SOLELY through desired_speed, so adding new
+        decision rules never touches this code."""
+        if self.state != STATE_MOVING:
+            return
+        self.current_speed = integrate_speed(
+            self.current_speed, self.desired_speed,
+            self.acceleration_rate, self.braking_rate, dt)
 
     @property
     def next_lane(self):
@@ -404,6 +518,10 @@ class TrafficSimulation:
         self._edges = None
         self._turns = None
         self._connections = None
+        # Junction gatekeeping: one controller per controlled intersection.
+        # Rebuilt from topology at reset / route prep / spawn; movement consults
+        # it for every junction entry.
+        self.intersections = IntersectionControl(network)
 
     def reset(self):
         self.vehicles = []
@@ -411,11 +529,13 @@ class TrafficSimulation:
         self._edges = None
         self._turns = None
         self._connections = None
+        self.intersections.rebuild()
 
     def spawn_vehicle(self, start_node_id, dest_node_id):
         """Compute a lane path start->dest and spawn a vehicle on it.
         Returns (vehicle, message); vehicle is None when no path exists."""
         edges, turns, connections = build_routing_graph(self.network)
+        self.intersections.rebuild()
         path = find_lane_path(edges,
                               lanes_departing_node(self.network, start_node_id),
                               lanes_arriving_node(self.network, dest_node_id))
@@ -425,15 +545,29 @@ class TrafficSimulation:
 
         vehicle = self._spawn_on_path(path, connections)
         self._valid_edges = set(turns.keys())
+        if vehicle is None:
+            return None, (f"Spawn blocked: node {start_node_id}'s departing "
+                          f"lane is occupied near the start")
         turn_summary = [turns[(path[i], path[i + 1])]
                         for i in range(len(path) - 1)]
         return vehicle, (f"Path: {len(path)} lanes, "
                          f"turns: {', '.join(turn_summary) or 'none'}")
 
+    def _spawn_point_clear(self, spawn_pos):
+        """SPAWNER gate: is the departing lane's start region free for a new
+        car? True when no existing vehicle sits within SPAWN_CLEARANCE_FT of
+        `spawn_pos`. Because cars accelerate from rest, a car that just left is
+        still near the start; placing another there would overlap it. Purely a
+        placement decision -- nothing here touches how vehicles move."""
+        sx, sy = spawn_pos
+        return all(math.hypot(v.pos[0] - sx, v.pos[1] - sy) >= SPAWN_CLEARANCE_FT
+                   for v in self.vehicles)
+
     def _spawn_on_path(self, path, connections):
         """Compile a lane path into traversal segments, create the Vehicle,
         add it, and return it. Caller owns self._valid_edges. Shared by the
-        single-vehicle spawn_vehicle() and the batch spawn_trip()."""
+        single-vehicle spawn_vehicle() and the batch spawn_trip(). Returns None
+        when the departing lane's start is not clear (see _spawn_point_clear)."""
         segments = []
         prev_lane = None
         for lane_id in path:
@@ -447,13 +581,22 @@ class TrafficSimulation:
                 curve = get_connection_curve(conn.source, conn.target, node)
                 segments.append({"kind": "connection", "lane_id": lane_id,
                                  "points": curve, "node_pos": node.pos,
+                                 "node_id": node.id,
+                                 # lane_graph's turn classification for this
+                                 # movement, so the intersection controllers can
+                                 # build first-class Movement objects.
+                                 "turn_type": conn.turn_type,
                                  "length": _polyline_length(curve)})
             segments.append({"kind": "lane", "lane_id": lane_id,
                              "points": pts, "length": _polyline_length(pts)})
             prev_lane = lane_id
 
+        spawn_pos = segments[0]["points"][0]
+        if not self._spawn_point_clear(spawn_pos):
+            return None
+
         vehicle = Vehicle(path=path, current_lane=path[0], segments=segments,
-                          pos=segments[0]["points"][0],
+                          pos=spawn_pos,
                           heading=_direction_at_arc(segments[0]["points"], 0.0))
         self.vehicles.append(vehicle)
         return vehicle
@@ -463,6 +606,7 @@ class TrafficSimulation:
         spawns in a batch (see spawn_trip). Cheap per-spawn cost afterward."""
         self._edges, self._turns, self._connections = build_routing_graph(self.network)
         self._valid_edges = set(self._turns.keys())
+        self.intersections.rebuild()
 
     def spawn_trip(self, start_node_id, dest_node_id, dest_building_id=None):
         """Spawn one vehicle for a scheduled trip using the cached routing
@@ -479,6 +623,8 @@ class TrafficSimulation:
         if path is None:
             return None
         vehicle = self._spawn_on_path(path, self._connections)
+        if vehicle is None:   # no path, or the departing lane's start is occupied
+            return None
         vehicle.dest_building_id = dest_building_id
         return vehicle
 
@@ -518,8 +664,35 @@ class TrafficSimulation:
         return f"Vehicle {start.id}->{dest.id}: {message}"
 
     def update(self, dt):
+        # Driver-model pipeline -- four decoupled passes, each its own layer,
+        # handing off through exactly one field:
+        #
+        #   0. Intersection control bookkeeping for this frame (clear per-frame
+        #      waiters, age transition flashes, and let policy controllers observe
+        #      approaching vehicles -- e.g. stop-sign arrival detection + dwell
+        #      timing) before any junction requests.
+        self.intersections.begin_step(self.vehicles, dt)
+        #   1. MOVEMENT: advance each vehicle along its path using the speed the
+        #      dynamics layer decided last frame (current_speed). Geometry only;
+        #      every junction entry is gated by the intersection controllers.
         for vehicle in self.vehicles:
-            vehicle.update(dt, self._valid_edges)
+            vehicle.move(dt, self._valid_edges, self.intersections)
+        #   2. PERCEPTION (sense): from the new positions, refresh each vehicle's
+        #      view of the car ahead. Read-only w.r.t. motion -- it only sets
+        #      vehicle.perception. Local import avoids a module-load cycle
+        #      (vehicle_perception imports constants from this module).
+        from vehicle_perception import compute_perception
+        compute_perception(self.vehicles)
+        #   3. DECISION: from perception + logical state (and a read-only view of
+        #      the intersection controllers, for approach planning), set each
+        #      desired_speed via the speed-governor rules (min of all proposals).
+        #      Writes ONLY desired_speed; new rules slot in here without touching
+        #      dynamics, movement, or reservation logic.
+        compute_decisions(self.vehicles, DecisionContext(self.intersections))
+        #   4. DYNAMICS: ramp current_speed toward the freshly decided
+        #      desired_speed, ready for next frame's movement.
+        for vehicle in self.vehicles:
+            vehicle.integrate_dynamics(dt)
 
     def visual_layers(self, show_paths=True):
         """Visualization emitted as the editor's generic visual-layer shape
@@ -564,3 +737,98 @@ class TrafficSimulation:
                                "color": VEHICLE_COLORS[vehicle.state],
                                "alpha": 255})
         return layers
+
+    def perception_visual_layers(self):
+        """Optional debug overlay for the perception system (separate from the
+        vehicle/path layers above so it can be toggled independently): for each
+        vehicle that has detected a leader, a link line from the follower to its
+        leader (color-coded by closing state), a translucent ring on the
+        leader, and the bumper-to-bumper following distance as a label at the
+        link midpoint. Purely a view of vehicle.perception; reads nothing else
+        and mutates nothing."""
+        layers = []
+        for vehicle in self.vehicles:
+            p = getattr(vehicle, "perception", None)
+            if p is None or not p.has_leader:
+                continue
+            if p.approaching:
+                color = COLOR_PERCEPTION_APPROACH
+            elif p.separating:
+                color = COLOR_PERCEPTION_SEPARATE
+            else:
+                color = COLOR_PERCEPTION_STEADY
+            leader = p.leader
+            layers.append({"shape": "line", "points": [vehicle.pos, leader.pos],
+                           "color": color, "width": 2})
+            layers.append({"shape": "circle", "pos": leader.pos,
+                           "radius": VEHICLE_LENGTH_FT * 0.75,
+                           "color": color, "alpha": 90})
+            mid = ((vehicle.pos[0] + leader.pos[0]) / 2.0,
+                   (vehicle.pos[1] + leader.pos[1]) / 2.0)
+            layers.append({"shape": "text", "pos": mid,
+                           "text": f"{p.clear_gap:.0f} ft", "color": color})
+        return layers
+
+    def dynamics_visual_layers(self):
+        """Optional debug overlay for the dynamics layer: a per-vehicle speed
+        readout 'current/desired <glyph>' (ft/s) drawn just above each car,
+        colored by the DERIVED motion state -- accelerating (green, ^),
+        cruising (gray, =) or braking (red, v). Reads only the vehicle's speed
+        state; the accel/brake state itself is computed here, never stored."""
+        layers = []
+        for vehicle in self.vehicles:
+            state = motion_state(vehicle.current_speed, vehicle.desired_speed)
+            layers.append({
+                "shape": "text",
+                "pos": (vehicle.pos[0], vehicle.pos[1] - VEHICLE_LENGTH_FT),
+                "text": (f"{vehicle.current_speed:.0f}/{vehicle.desired_speed:.0f}"
+                         f" {DYNAMICS_STATE_GLYPHS[state]}"),
+                "color": DYNAMICS_STATE_COLORS[state],
+            })
+        return layers
+
+    def decision_visual_layers(self):
+        """Optional debug overlay for the decision layer: below each car, the
+        rule currently binding its desired_speed and that target speed (ft/s),
+        colored by rule (gray cruise / amber following / red-orange approach).
+        For a car easing toward a controlled junction it ALSO draws the stop
+        line, a link to it, and the stopping distance + governing approach speed.
+        Everything is recomputed read-only from the speed-governor proposals and
+        the intersection-approach geometry -- never stored on the vehicle."""
+        ctx = DecisionContext(self.intersections)
+        layers = []
+        for vehicle in self.vehicles:
+            name = binding_rule(vehicle, ctx)
+            layers.append({
+                "shape": "text",
+                "pos": (vehicle.pos[0], vehicle.pos[1] + VEHICLE_LENGTH_FT),
+                "text": f"{name} {vehicle.desired_speed:.0f}",
+                "color": DECISION_RULE_COLORS.get(name, COLOR_DECISION_DEFAULT),
+            })
+            # Intersection-approach detail: only while the rule is actually
+            # constraining (a controlled junction ahead that isn't open yet).
+            info = approach_info(vehicle, ctx)
+            if info is not None and not info.permitted:
+                binding = (name == "approach")   # is this rule the one governing?
+                layers.append({"shape": "line",
+                               "points": [vehicle.pos, info.stop_pos],
+                               "color": COLOR_STOP_LINE,
+                               "width": 2 if binding else 1})
+                layers.append({"shape": "circle", "pos": info.stop_pos,
+                               "radius": 3.5, "color": COLOR_STOP_LINE,
+                               "alpha": 220})
+                mid = ((vehicle.pos[0] + info.stop_pos[0]) / 2.0,
+                       (vehicle.pos[1] + info.stop_pos[1]) / 2.0)
+                # stopping distance (to the line) + governing approach speed cap;
+                # a '*' marks that this rule is the binding one this frame.
+                tag = "*" if binding else ""
+                layers.append({"shape": "text", "pos": mid,
+                               "text": f"{tag}stop {info.distance:.0f}ft @{info.cap:.0f}",
+                               "color": COLOR_STOP_LINE})
+        return layers
+
+    def intersection_visual_layers(self):
+        """Optional debug overlay for the intersection-control framework:
+        controlled junctions (discs + 'kind:count') and the vehicles currently
+        registered inside them. Delegates to the controller set; read-only."""
+        return self.intersections.visual_layers()
