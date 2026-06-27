@@ -86,6 +86,9 @@ from destinations import (RESIDENTIAL, OFFICE, RETAIL, SCHOOL, RECREATION,
 from sim_clock import TripScheduler
 from test_city import create_test_city
 from undo_history import UndoStack, MoveTransaction
+from inspector_panel import InspectorPanel
+from ui_widgets import ConfirmDialog
+from intersection_control import CONTROL_TYPE_LABELS
 
 
 NODE_RADIUS = 8
@@ -1240,15 +1243,32 @@ class Sidebar:
         self.grid_panel = GridPanel(font, header_font)
         # Settings (always shown): clock format, future global options.
         self.settings_panel = SettingsPanel(font, header_font)
+        # Properties/Inspector for the selected object (shown when one is
+        # selected; replaces the instructions area). Owns its own scrolling.
+        self.inspector_panel = InspectorPanel(font, header_font)
 
     def draw(self, rect, current_tool, status_message="", scroll=0, context_hint="",
              hovered=None, snap_mode=SNAP_AUTO, trips_on=False, paths_on=True,
              trips_value=TRIPS_AT_ONCE_DEFAULT, active_building_type="House",
              grid_enabled=False, grid_size=GRID_SIZE_DEFAULT, clock_24h=True,
-             mouse_pos=None, line_weight=1.0, width_scale=1.0):
+             mouse_pos=None, line_weight=1.0, width_scale=1.0,
+             network=None, selected_node=None):
         pygame.draw.rect(self.surface, COLOR_SIDEBAR_BG, rect)
 
         self.toolbar.draw(self.surface, rect, current_tool, hovered=hovered)
+
+        # When an object is selected, the Inspector takes the whole region under
+        # the toolbar (so it's always visible, not pushed off by the tool/global
+        # panels) and owns its own scrolling. The contextual panels return when
+        # nothing is selected.
+        if selected_node is not None and network is not None:
+            top = self.toolbar.full_bottom(rect) + 4
+            insp_rect = pygame.Rect(rect.x, top, rect.width, rect.bottom - top)
+            self.inspector_panel.draw(self.surface, insp_rect, network,
+                                      selected_node, mouse_pos=mouse_pos)
+            if hovered is not None:
+                self._draw_tooltip(rect, hovered)
+            return
 
         x = rect.x + 16
         y = self.toolbar.full_bottom(rect) + 4
@@ -2918,6 +2938,11 @@ class InputController:
         self.undo_stack = UndoStack()
         self.move_txn = None
 
+        # Active modal confirmation dialog (or None). While set, the main loop
+        # routes all input here and runs _on_confirm only on "confirm".
+        self.modal = None
+        self._on_confirm = None
+
         self.selected_road = None
         self.selected_node = None
         self.selected_building = None
@@ -3045,14 +3070,17 @@ class InputController:
             self.status_message = ("Intersection overlay: on" if self.show_intersections
                                     else "Intersection overlay: off")
         elif event.key == pygame.K_b:
-            self.load_test_city()
+            self.request_load_test_city()
         elif event.key == pygame.K_t:
             self.toggle_trip_demo()
         elif event.key == pygame.K_ESCAPE:
-            # Abort an in-progress drag (revert + record nothing) before
-            # falling through to cancelling any road placement.
-            self._cancel_move()
-            self.placement.cancel()
+            # A modal dialog swallows Escape first (cancel it); otherwise abort
+            # an in-progress drag, then cancel any road placement.
+            if self.modal is not None:
+                self.resolve_modal("cancel")
+            else:
+                self._cancel_move()
+                self.placement.cancel()
         elif event.key == pygame.K_s:
             if event.mod & pygame.KMOD_SHIFT:
                 self.save_map_as()
@@ -3061,7 +3089,7 @@ class InputController:
         elif event.key == pygame.K_l:
             self.load_from_file()
         elif event.key in (pygame.K_DELETE, pygame.K_BACKSPACE):
-            self.delete_selected()
+            self.request_delete_selected()
         elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
             # Snap Mode overlay: while the New Road tool is active, 1/2/3
             # select the snap mode (Auto/Straight/Curved). In every other
@@ -3269,6 +3297,63 @@ class InputController:
             self.selected_node = node
             self.selected_road = None
             self.selected_building = None
+
+    # ------------------------------------------------------------------
+    # Intersection control (applied from the Inspector)
+    # ------------------------------------------------------------------
+    def set_node_control(self, node, kind):
+        """Set a junction node's control TYPE and re-instantiate its controller
+        via the existing factory (IntersectionControl.rebuild reads node.data)."""
+        node.data["control"] = kind
+        self.traffic.intersections.rebuild()
+        label = CONTROL_TYPE_LABELS.get(kind, kind)
+        self.status_message = f"Node {node.id} control: {label}"
+
+    def set_node_control_setting(self, node, key, value):
+        """Set one controller setting (node.data[key]) and rebuild so the live
+        controller picks it up."""
+        node.data[key] = value
+        self.traffic.intersections.rebuild()
+        self.status_message = f"Node {node.id} {key}: {value}"
+
+    # ------------------------------------------------------------------
+    # Confirmation modals (destructive actions)
+    # ------------------------------------------------------------------
+    def open_confirm(self, title, message, on_confirm, confirm_label="Delete"):
+        """Open a modal confirmation; on_confirm() runs only if the user
+        confirms. While a modal is open the main loop blocks other input."""
+        self.modal = ConfirmDialog(title, message, confirm_label=confirm_label)
+        self._on_confirm = on_confirm
+
+    def resolve_modal(self, result):
+        """Apply a modal's outcome ('confirm'/'cancel') and close it."""
+        on_confirm = self._on_confirm
+        self.modal = None
+        self._on_confirm = None
+        if result == "confirm" and on_confirm is not None:
+            on_confirm()
+
+    def request_delete_selected(self):
+        """Ask to delete the current selection (confirmation gate before the
+        actual delete)."""
+        if self.selected_node is not None:
+            n_roads = len(self.network.roads_for_node(self.selected_node.id))
+            what = f"node {self.selected_node.id} and its {n_roads} road(s)"
+        elif self.selected_road is not None:
+            what = f"road {self.selected_road.id}"
+        elif self.selected_building is not None:
+            what = f"building {self.selected_building.id}"
+        else:
+            return
+        self.open_confirm("Delete object", f"Delete {what}? This cannot be undone.",
+                          self.delete_selected, confirm_label="Delete")
+
+    def request_load_test_city(self):
+        """Confirm before replacing the whole map with the test city."""
+        self.open_confirm("Replace map",
+                          "Replace the current map with the test city? "
+                          "Unsaved changes will be lost.",
+                          self.load_test_city, confirm_label="Replace")
 
     def delete_selected(self):
         """Delete whatever is selected (road, node, or building) in the Select
@@ -3590,6 +3675,23 @@ def _handle_lane_menu_click(renderer, selected_road, screen_pos):
     return False
 
 
+def _apply_inspector_action(controller, action):
+    """Apply an InspectorPanel action descriptor to the selected node. The
+    Inspector reports intent; the controller owns the mutation (and the
+    controller-rebuild / confirmation that follows)."""
+    kind = action[0]
+    node = controller.selected_node
+    if node is None:
+        return
+    if kind == "set_control":
+        controller.set_node_control(node, action[1])
+    elif kind == "set_setting":
+        controller.set_node_control_setting(node, action[1], action[2])
+    elif kind == "delete":
+        controller.request_delete_selected()
+    # "consumed" -> the inspector handled it internally (open dropdown, scrollbar)
+
+
 def _compute_layout(window_size):
     """Pure layout helper: given the window size, return (canvas_rect,
     sidebar_rect). Sidebar keeps a fixed width; canvas fills the rest."""
@@ -3806,6 +3908,30 @@ def main():
                 if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     sidebar.settings_panel.release()
                     continue
+            # Inspector scrollbar drag owns motion/release while active.
+            if sidebar.inspector_panel.dragging:
+                if event.type == pygame.MOUSEMOTION:
+                    sidebar.inspector_panel.handle_motion(event.pos)
+                    continue
+                if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                    sidebar.inspector_panel.release()
+                    continue
+
+            # A modal dialog (confirmations) captures all input until resolved.
+            if controller.modal is not None:
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    result = controller.modal.handle_click(raw_screen_pos)
+                    if result is not None:
+                        controller.resolve_modal(result)
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    controller.resolve_modal("cancel")
+                continue
+
+            # A click on the canvas dismisses any open Inspector dropdown.
+            if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and in_canvas):
+                sidebar.inspector_panel.close_popups()
 
             if event.type == pygame.QUIT:
                 running = False
@@ -3839,6 +3965,14 @@ def main():
             elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and not in_canvas:
                 # Sidebar UI: toolbar buttons.
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    # Inspector (shown when an object is selected) gets first
+                    # crack at sidebar clicks; an action there consumes the click.
+                    inspector_action = (
+                        sidebar.inspector_panel.handle_click(raw_screen_pos)
+                        if controller.selected_node is not None else None)
+                    if inspector_action is not None:
+                        _apply_inspector_action(controller, inspector_action)
+                        continue
                     # Snap Mode overlay panel first; falls through to the
                     # toolbar buttons if the click missed it.
                     snap_clicked = sidebar.snap_panel.handle_click(raw_screen_pos)
@@ -3909,8 +4043,13 @@ def main():
                                 controller.load_from_file()
 
             elif event.type == pygame.MOUSEWHEEL and not in_canvas:
-                # Sidebar UI: scroll the instructions panel.
-                controller.sidebar_scroll = max(0, controller.sidebar_scroll - event.y * 20)
+                # Sidebar UI: the Inspector scrolls when an object is selected
+                # (and the cursor is over it); otherwise scroll the instructions.
+                if (controller.selected_node is not None
+                        and sidebar.inspector_panel.handle_wheel(event.y)):
+                    pass
+                else:
+                    controller.sidebar_scroll = max(0, controller.sidebar_scroll - event.y * 20)
 
             elif (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
                   and in_canvas and renderer.lane_menu_buttons
@@ -3965,7 +4104,14 @@ def main():
                       clock_24h=controller.clock_24h,
                       mouse_pos=raw_screen_pos,
                       line_weight=ROAD_LINE_WEIGHT,
-                      width_scale=road_style.ROAD_WIDTH_SCALE)
+                      width_scale=road_style.ROAD_WIDTH_SCALE,
+                      network=network,
+                      selected_node=controller.selected_node)
+
+        # Modal confirmation dialog draws last, over everything.
+        if controller.modal is not None:
+            controller.modal.draw(screen, screen.get_rect(), font, header_font,
+                                  mouse_pos=raw_screen_pos)
 
         pygame.display.flip()
         clock.tick(60)

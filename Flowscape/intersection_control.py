@@ -54,6 +54,13 @@ from lane_graph import (TURN_STRAIGHT, TURN_LEFT, TURN_RIGHT, TURN_UTURN,
 
 CONTROL_UNCONTROLLED = "uncontrolled"
 CONTROL_RESERVATION = "reservation"
+# Future control kinds: listed in the editor's control-type selector as disabled
+# placeholders, but deliberately NOT registered in CONTROLLER_TYPES yet (no
+# concrete controller class), so they can't be instantiated. Adding a controller
+# class + a CONTROLLER_TYPES entry is all that's needed to enable one.
+CONTROL_TRAFFIC_LIGHT = "traffic_light"
+CONTROL_YIELD = "yield"
+CONTROL_ROUNDABOUT = "roundabout"
 
 # Default control for a junction node when its data doesn't say otherwise.
 # Intersections are reservation-managed out of the box; set node.data['control']
@@ -520,19 +527,82 @@ CONTROLLER_TYPES = {
 }
 
 
+# ----------------------------------------------------------------------
+# Control-type catalog + per-type settings schema (for the editor UI).
+# ----------------------------------------------------------------------
+#
+# The editor's Intersection Control inspector renders ENTIRELY from this
+# metadata -- the selector lists CONTROL_TYPE_ORDER (greying out anything not in
+# CONTROL_TYPE_IMPLEMENTED), and a node's per-type settings come from
+# control_settings_schema(). So a new controller is exposed by adding a label, a
+# CONTROLLER_TYPES entry, and (optionally) a schema -- no UI code changes.
+
+# Display order in the selector; labels shown to the user.
+CONTROL_TYPE_ORDER = (CONTROL_UNCONTROLLED, CONTROL_RESERVATION, CONTROL_STOP_SIGN,
+                      CONTROL_TRAFFIC_LIGHT, CONTROL_YIELD, CONTROL_ROUNDABOUT)
+CONTROL_TYPE_LABELS = {
+    CONTROL_UNCONTROLLED: "Uncontrolled",
+    CONTROL_RESERVATION: "Reservation",
+    CONTROL_STOP_SIGN: "Stop Sign",
+    CONTROL_TRAFFIC_LIGHT: "Traffic Light",
+    CONTROL_YIELD: "Yield",
+    CONTROL_ROUNDABOUT: "Roundabout",
+}
+# Kinds with a real controller class (selectable now). Everything else in the
+# order is a disabled placeholder until its class lands in CONTROLLER_TYPES.
+CONTROL_TYPE_IMPLEMENTED = frozenset(CONTROLLER_TYPES.keys())
+
+
+@dataclass(frozen=True)
+class FieldSpec:
+    """One editable per-controller setting, stored at node.data[key]. The
+    Inspector renders a numeric stepper from this; make_controller() applies it
+    to the controller instance (by attribute name == key)."""
+    key: str
+    label: str
+    type: str           # "float" | "int"
+    minimum: float
+    maximum: float
+    step: float
+    default: float
+
+
+# Per-control-kind settings. Stop sign is live; the traffic-light schema is
+# defined ahead of its controller so enabling it later is pure data.
+_CONTROL_SETTINGS = {
+    CONTROL_STOP_SIGN: (
+        FieldSpec("stop_duration", "Stop duration (s)", "float",
+                  0.5, 10.0, 0.5, DEFAULT_STOP_DURATION_S),
+    ),
+    CONTROL_TRAFFIC_LIGHT: (
+        FieldSpec("cycle_length", "Cycle length (s)", "float", 10.0, 180.0, 5.0, 60.0),
+        FieldSpec("green_duration", "Green (s)", "float", 3.0, 120.0, 1.0, 25.0),
+        FieldSpec("yellow_duration", "Yellow (s)", "float", 1.0, 10.0, 0.5, 3.0),
+        FieldSpec("all_red_duration", "All-red (s)", "float", 0.0, 10.0, 0.5, 2.0),
+        FieldSpec("initial_phase", "Initial phase", "int", 0.0, 8.0, 1.0, 0.0),
+    ),
+}
+
+
+def control_settings_schema(kind):
+    """Ordered settings (FieldSpec tuple) for a control kind; () if none."""
+    return _CONTROL_SETTINGS.get(kind, ())
+
+
 def make_controller(network, node_id):
     """Build the controller for an intersection node from its logical config
     (node.data['control'], default DEFAULT_INTERSECTION_CONTROL). The single
     place a controller TYPE is chosen; vehicle movement only ever sees the
-    resulting interface. Optional per-node policy config (e.g. 'stop_duration')
-    is applied where the controller exposes it."""
+    resulting interface. Per-node policy settings from control_settings_schema()
+    are applied generically (attribute name == FieldSpec.key) where present."""
     data = network.nodes[node_id].data or {}
     kind = data.get("control", DEFAULT_INTERSECTION_CONTROL)
     cls = CONTROLLER_TYPES.get(kind, ReservationController)
     controller = cls(node_id)
-    duration = data.get("stop_duration")
-    if duration is not None and hasattr(controller, "stop_duration"):
-        controller.stop_duration = duration
+    for field in control_settings_schema(kind):
+        value = data.get(field.key)
+        if value is not None and hasattr(controller, field.key):
+            setattr(controller, field.key, value)
     return controller
 
 
