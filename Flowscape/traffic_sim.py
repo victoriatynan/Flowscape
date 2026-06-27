@@ -55,6 +55,10 @@ UNIFORM_EDGE_COST = 1.0
 # (car-following, lights); the dynamics layer ramps current_speed toward it.
 VEHICLE_SPEED_FT_S = 44.0      # ~30 mph
 VEHICLE_LENGTH_FT = 14.0       # small car, real-world scale (world is feet)
+# Render-only magnification for car sprites/markers. Purely cosmetic: it scales
+# how big vehicles are DRAWN, never the physical length used by spawn
+# clearance, perception, or car-following (those all key off VEHICLE_LENGTH_FT).
+VEHICLE_RENDER_SCALE = 2.0
 # Spawn gating: a trip is only released onto its departing lane when the lane's
 # start point is clear of other cars by this margin. Vehicles accelerate from
 # rest, so a leader that departed a moment ago is still sitting near the start;
@@ -724,16 +728,16 @@ class TrafficSimulation:
                 # halo under the sprite (arrived = gray, blocked = red).
                 if vehicle.state != STATE_MOVING:
                     layers.append({"shape": "circle", "pos": vehicle.pos,
-                                   "radius": VEHICLE_LENGTH_FT * 0.65,
+                                   "radius": VEHICLE_LENGTH_FT * 0.65 * VEHICLE_RENDER_SCALE,
                                    "color": VEHICLE_COLORS[vehicle.state],
                                    "alpha": 120})
                 layers.append({"shape": "sprite", "pos": vehicle.pos,
                                "heading": vehicle.heading,
-                               "length_ft": VEHICLE_LENGTH_FT,
+                               "length_ft": VEHICLE_LENGTH_FT * VEHICLE_RENDER_SCALE,
                                "image": sprite})
             else:
                 layers.append({"shape": "circle", "pos": vehicle.pos,
-                               "radius": VEHICLE_RADIUS_FT,
+                               "radius": VEHICLE_RADIUS_FT * VEHICLE_RENDER_SCALE,
                                "color": VEHICLE_COLORS[vehicle.state],
                                "alpha": 255})
         return layers
