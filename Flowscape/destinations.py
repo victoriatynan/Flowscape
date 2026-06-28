@@ -7,31 +7,47 @@ simulation data + logic. No pygame, no rendering, no input handling. It turns
 + a departure time), which the existing traffic_sim.TrafficSimulation then
 turns into vehicles.
 
-Design:
-  - BuildingType  : shared, reusable definition (category, size, capacity,
-                    operating hours). One per archetype, held in BUILDING_TYPES.
-  - Building       : a lightweight placed instance that REFERENCES a
-                    BuildingType by name (see buildings.Building). Category,
-                    size, capacity and hours are NEVER duplicated onto an
-                    instance; they are looked up from the type here.
+Demand model (Phase 1):
+  - BuildingType   : shared, reusable archetype. Owns its category, size,
+                     vehicle-count RANGE and a daily ACTIVITY PROFILE (a list
+                     of Activities, one per part of the day). One per archetype,
+                     held in BUILDING_TYPES.
+  - Activity        : a thing the building's vehicles do during a part of the
+                     day (e.g. "Lunch", "Evening Return"). It carries a
+                     departure WINDOW and a set of weighted destination CHOICES.
+                     A choice of STAY produces no trip (the vehicle stays put).
+  - Building        : a lightweight placed instance that REFERENCES a
+                     BuildingType by name (see buildings.Building). It also
+                     carries a stable per-placement `seed`; every randomized
+                     property (vehicle count, which activity each vehicle does,
+                     departure time) is DERIVED from that seed, so a building's
+                     behavior is reproducible and only changes when reseeded.
 
-What this module deliberately does NOT do (later-stage features): zoning, land
-value, parking, transit, freight, procedural city generation, hundreds of
-building types. Keep it simple and extensible.
+The flow is unchanged: Building -> Trip -> connection node -> spawn vehicle.
+A road node never sources trips by itself; only buildings with connection
+nodes participate.
+
+What this module deliberately does NOT do yet (later phases): travel-time-aware
+departure scheduling (Phase 2), user-facing demand controls / per-category
+activity toggles + weights + global multipliers UI (Phase 3). The data model
+already leaves room for them (demand_multipliers is wired through here).
 """
 
 from dataclasses import dataclass
+import random
 
 # ----------------------------------------------------------------------
-# Categories: drive traffic demand and daily travel patterns.
+# Categories: the top-level land-use groups that shape demand.
 # ----------------------------------------------------------------------
 RESIDENTIAL = "Residential"
-OFFICE = "Office"
-RETAIL = "Retail"
-SCHOOL = "School"
+COMMERCIAL = "Commercial"
+INDUSTRIAL = "Industrial"
+EDUCATION = "Education"
+PUBLIC_SERVICES = "Public Services"
 RECREATION = "Recreation"
 
-CATEGORIES = (RESIDENTIAL, OFFICE, RETAIL, SCHOOL, RECREATION)
+CATEGORIES = (RESIDENTIAL, COMMERCIAL, INDUSTRIAL, EDUCATION,
+              PUBLIC_SERVICES, RECREATION)
 
 # ----------------------------------------------------------------------
 # Sizes.
@@ -41,121 +57,255 @@ MEDIUM = "Medium"
 LARGE = "Large"
 
 # ----------------------------------------------------------------------
-# Operating hours per category, as 24h decimal hours (open_hour, close_hour).
-# Residential is always-on (0 -> 24). These are the per-category defaults;
-# a BuildingType carries its own hours (seeded from these) so individual
-# types can diverge later without touching this table.
-# ----------------------------------------------------------------------
-CATEGORY_HOURS = {
-    RESIDENTIAL: (0.0, 24.0),    # 24 hr
-    OFFICE: (8.0, 17.0),         # 8 AM - 5 PM
-    SCHOOL: (7.0, 15.0),         # 7 AM - 3 PM
-    RETAIL: (9.0, 21.0),         # 9 AM - 9 PM
-    RECREATION: (11.0, 23.0),    # 11 AM - 11 PM
-}
-
-
-@dataclass(frozen=True)
-class BuildingType:
-    """Shared, reusable definition of a building archetype. Frozen because a
-    type is a constant: instances reference it, they never mutate it."""
-    name: str
-    category: str
-    size: str
-    capacity: int          # people/visitors -> how many trips it can source/sink
-    open_hour: float       # 24h decimal
-    close_hour: float      # 24h decimal
-
-
-def _bt(name, category, size, capacity):
-    """BuildingType with operating hours seeded from its category default."""
-    open_hour, close_hour = CATEGORY_HOURS[category]
-    return BuildingType(name, category, size, capacity, open_hour, close_hour)
-
-
-# ----------------------------------------------------------------------
-# Initial archetypes, the only building types for now. Enough to generate
-# realistic commuting, school, shopping and evening-return traffic.
-#   capacity = resident population (Residential), workers (Office/School staff
-#   are folded into the student count for School), or peak visitors
-#   (Retail/Recreation).
-# NOTE: School (200 students) and Park (50 visitors) capacities were not
-# specified; reasonable starting values, trivially tunable here.
-# ----------------------------------------------------------------------
-BUILDING_TYPES = {
-    "House":        _bt("House",        RESIDENTIAL, SMALL,    3),
-    "Apartment":    _bt("Apartment",    RESIDENTIAL, LARGE,   40),
-    "Small Office": _bt("Small Office", OFFICE,      SMALL,   20),
-    "Large Office": _bt("Large Office", OFFICE,      LARGE,  300),
-    "Store":        _bt("Store",        RETAIL,      SMALL,   30),
-    "School":       _bt("School",       SCHOOL,      MEDIUM, 200),
-    "Park":         _bt("Park",         RECREATION,  MEDIUM,  50),
-}
-
-
-def building_type_of(building):
-    """The BuildingType a placed Building instance references."""
-    return BUILDING_TYPES[building.building_type]
-
-
-# ----------------------------------------------------------------------
-# Daily travel patterns: (origin_category -> destination_category) per period.
-# Intentionally minimal; no advanced behavior yet.
+# Periods of the day. An activity belongs to one; it is informational (the
+# real timing lives in each activity's departure window).
 # ----------------------------------------------------------------------
 MORNING = "morning"
 MIDDAY = "midday"
 EVENING = "evening"
 
-# Weekday patterns: work/school commute drives the day.
-TRAVEL_PATTERNS = {
-    MORNING: [
-        (RESIDENTIAL, OFFICE),
-        (RESIDENTIAL, SCHOOL),
-    ],
-    MIDDAY: [
-        (OFFICE, RETAIL),
-        (OFFICE, RECREATION),
-    ],
-    EVENING: [
-        (OFFICE, RESIDENTIAL),
-        (RETAIL, RESIDENTIAL),
-        (RECREATION, RESIDENTIAL),
-    ],
-}
+# A destination choice of STAY means "no trip": the vehicle stays at the
+# building for that activity. Modeled as a None destination category.
+STAY = None
 
-# Weekend patterns: NO WORK. Offices and schools are closed, so there is no
-# commute. People still run errands and go out (leisure), so the day is built
-# from home<->retail/recreation round trips instead.
-WEEKEND_TRAVEL_PATTERNS = {
-    MORNING: [
-        (RESIDENTIAL, RECREATION),
-    ],
-    MIDDAY: [
-        (RESIDENTIAL, RETAIL),
-        (RESIDENTIAL, RECREATION),
-    ],
-    EVENING: [
-        (RETAIL, RESIDENTIAL),
-        (RECREATION, RESIDENTIAL),
-    ],
+# ----------------------------------------------------------------------
+# Operating hours per category, 24h decimal (open_hour, close_hour). Kept as
+# reference metadata on each BuildingType. Residential is always-on.
+# ----------------------------------------------------------------------
+CATEGORY_HOURS = {
+    RESIDENTIAL: (0.0, 24.0),
+    COMMERCIAL: (8.0, 21.0),
+    INDUSTRIAL: (6.0, 22.0),
+    EDUCATION: (7.0, 16.0),
+    PUBLIC_SERVICES: (8.0, 20.0),
+    RECREATION: (10.0, 23.0),
 }
 
 # ----------------------------------------------------------------------
-# Departure-time windows (24h decimal hours). Each agent gets a random time
-# uniformly within its window so traffic spreads out instead of everyone
-# leaving at the same instant.
+# Departure windows (24h decimal), shared by the default activity profiles.
+# Each generated trip gets a random time uniformly inside its activity's
+# window, so departures spread out instead of firing all at once. Phase 2
+# will further bias these by estimated travel time.
 # ----------------------------------------------------------------------
-WORK_DEPARTURE_WINDOW = (7.5, 8.5)     # 7:30 - 8:30
-SCHOOL_DEPARTURE_WINDOW = (7.0, 8.0)   # 7:00 - 8:00
-DEFAULT_DEPARTURE_WINDOW = (9.0, 18.0)  # midday/evening trips spread broadly
+WORK_WINDOW = (7.0, 9.0)        # morning commute to work
+SCHOOL_WINDOW = (7.0, 8.5)      # morning drop-off / commute to school
+LUNCH_WINDOW = (11.5, 13.5)     # midday lunch run
+EVENING_WINDOW = (16.0, 18.5)   # evening return home
+SCHOOL_OUT_WINDOW = (14.0, 16.5)  # school lets out earlier
+LEISURE_WINDOW = (9.0, 20.0)    # errands / weekend trips spread broadly
 
-# Which window applies to a (period, destination_category) trip.
-def _departure_window(period, dest_category):
-    if period == MORNING and dest_category == OFFICE:
-        return WORK_DEPARTURE_WINDOW
-    if period == MORNING and dest_category == SCHOOL:
-        return SCHOOL_DEPARTURE_WINDOW
-    return DEFAULT_DEPARTURE_WINDOW
+
+# ----------------------------------------------------------------------
+# Activity model.
+# ----------------------------------------------------------------------
+@dataclass(frozen=True)
+class DestChoice:
+    """One weighted option for an activity: send the vehicle to a building of
+    `dest_category`, or STAY (no trip). Weights are relative, not required to
+    sum to 1; Phase 3's toggles work by zeroing/redistributing these."""
+    dest_category: str   # a category, or STAY (None)
+    weight: float
+
+
+@dataclass(frozen=True)
+class Activity:
+    """A part of a building type's day. The building's vehicles each pick one
+    of `choices` (by weight); non-STAY picks become trips departing at a random
+    time within `window`."""
+    name: str
+    period: str          # MORNING / MIDDAY / EVENING (informational)
+    window: tuple        # (lo, hi) 24h decimal departure window
+    choices: tuple       # tuple[DestChoice]
+
+
+def _act(name, period, window, *pairs):
+    """Activity from (category_or_STAY, weight) pairs."""
+    return Activity(name, period, window,
+                    tuple(DestChoice(cat, w) for cat, w in pairs))
+
+
+# ----------------------------------------------------------------------
+# Default activity profiles, per category: (weekday_profile, weekend_profile).
+# A profile is a tuple of Activities. An empty profile means "generates no
+# trips" (e.g. industry/schools are closed on weekends). These are the
+# hardcoded Phase 1 defaults; Phase 3 will let the user toggle/reweight them.
+#
+# Note on flow balance: Residential floods OUT in the morning (commute); the
+# workplace/leisure categories flood BACK to Residential in the evening. That
+# keeps the day's traffic two-directional without per-vehicle trip chaining.
+# ----------------------------------------------------------------------
+CATEGORY_PROFILES = {
+    RESIDENTIAL: (
+        (  # weekday
+            _act("Morning Commute", MORNING, WORK_WINDOW,
+                 (COMMERCIAL, 0.45), (INDUSTRIAL, 0.15), (EDUCATION, 0.10),
+                 (PUBLIC_SERVICES, 0.10), (STAY, 0.20)),
+            _act("Midday Errand", MIDDAY, LEISURE_WINDOW,
+                 (COMMERCIAL, 0.15), (RECREATION, 0.10), (STAY, 0.75)),
+            _act("Evening Out", EVENING, EVENING_WINDOW,
+                 (RECREATION, 0.15), (COMMERCIAL, 0.10), (STAY, 0.75)),
+        ),
+        (  # weekend
+            _act("Weekend Morning", MORNING, LEISURE_WINDOW,
+                 (RECREATION, 0.35), (STAY, 0.65)),
+            _act("Weekend Shopping", MIDDAY, LEISURE_WINDOW,
+                 (COMMERCIAL, 0.40), (RECREATION, 0.20), (STAY, 0.40)),
+            _act("Weekend Evening", EVENING, EVENING_WINDOW,
+                 (RECREATION, 0.20), (COMMERCIAL, 0.15), (STAY, 0.65)),
+        ),
+    ),
+    COMMERCIAL: (
+        (  # weekday
+            _act("Lunch", MIDDAY, LUNCH_WINDOW,
+                 (COMMERCIAL, 0.40), (RECREATION, 0.15), (STAY, 0.45)),
+            _act("Evening Return", EVENING, EVENING_WINDOW,
+                 (RESIDENTIAL, 0.90), (STAY, 0.10)),
+        ),
+        (  # weekend (open, but lighter)
+            _act("Weekend Lunch", MIDDAY, LUNCH_WINDOW,
+                 (COMMERCIAL, 0.30), (STAY, 0.70)),
+            _act("Weekend Return", EVENING, EVENING_WINDOW,
+                 (RESIDENTIAL, 0.80), (STAY, 0.20)),
+        ),
+    ),
+    INDUSTRIAL: (
+        (  # weekday
+            _act("Evening Return", EVENING, EVENING_WINDOW,
+                 (RESIDENTIAL, 0.90), (STAY, 0.10)),
+        ),
+        (),  # weekend: closed
+    ),
+    EDUCATION: (
+        (  # weekday
+            _act("Afternoon Return", EVENING, SCHOOL_OUT_WINDOW,
+                 (RESIDENTIAL, 0.90), (STAY, 0.10)),
+        ),
+        (),  # weekend: closed
+    ),
+    PUBLIC_SERVICES: (
+        (  # weekday
+            _act("Lunch", MIDDAY, LUNCH_WINDOW,
+                 (COMMERCIAL, 0.30), (STAY, 0.70)),
+            _act("Evening Return", EVENING, EVENING_WINDOW,
+                 (RESIDENTIAL, 0.70), (STAY, 0.30)),
+        ),
+        (  # weekend: reduced staffing (hospitals etc. stay open)
+            _act("Evening Return", EVENING, EVENING_WINDOW,
+                 (RESIDENTIAL, 0.50), (STAY, 0.50)),
+        ),
+    ),
+    RECREATION: (
+        (  # weekday
+            _act("Evening Return", EVENING, EVENING_WINDOW,
+                 (RESIDENTIAL, 0.80), (STAY, 0.20)),
+        ),
+        (  # weekend
+            _act("Evening Return", EVENING, EVENING_WINDOW,
+                 (RESIDENTIAL, 0.80), (STAY, 0.20)),
+        ),
+    ),
+}
+
+
+# ----------------------------------------------------------------------
+# Building types.
+# ----------------------------------------------------------------------
+@dataclass(frozen=True)
+class BuildingType:
+    """Shared, reusable definition of a building archetype. Frozen because a
+    type is a constant: instances reference it, they never mutate it.
+
+    `count_range` is the (min, max) number of vehicles a placed building of
+    this type sources per day; each placement rolls a stable value inside it
+    from its own seed. `weekday_profile` / `weekend_profile` are the activity
+    profiles that decide where those vehicles go and when."""
+    name: str
+    category: str
+    size: str
+    count_range: tuple          # (min, max) vehicles/day this type sources
+    weekday_profile: tuple      # tuple[Activity]
+    weekend_profile: tuple      # tuple[Activity]
+    open_hour: float            # 24h decimal
+    close_hour: float           # 24h decimal
+
+    @property
+    def capacity(self):
+        """Nominal capacity = top of the vehicle-count range. Used for
+        occupancy seeding/caps in the editor (back-compat with the old fixed
+        `capacity` field)."""
+        return self.count_range[1]
+
+
+def _bt(name, category, size, count_range):
+    """BuildingType with hours + activity profiles seeded from its category."""
+    open_hour, close_hour = CATEGORY_HOURS[category]
+    weekday, weekend = CATEGORY_PROFILES[category]
+    return BuildingType(name, category, size, count_range,
+                        weekday, weekend, open_hour, close_hour)
+
+
+# The catalogue. Grouped by category; count ranges are rough, easily tuned.
+BUILDING_TYPES = {
+    # Residential
+    "Small House":         _bt("Small House",         RESIDENTIAL, SMALL,  (1, 3)),
+    "Large House":         _bt("Large House",         RESIDENTIAL, MEDIUM, (2, 5)),
+    "Small Apartment":     _bt("Small Apartment",     RESIDENTIAL, MEDIUM, (8, 20)),
+    "Large Apartment":     _bt("Large Apartment",     RESIDENTIAL, LARGE,  (25, 60)),
+    # Commercial
+    "Small Business":      _bt("Small Business",      COMMERCIAL,  SMALL,  (5, 20)),
+    "Large Business":      _bt("Large Business",      COMMERCIAL,  LARGE,  (50, 200)),
+    "Restaurant":          _bt("Restaurant",          COMMERCIAL,  SMALL,  (10, 40)),
+    "Cafe":                _bt("Cafe",                COMMERCIAL,  SMALL,  (5, 20)),
+    "Retail":              _bt("Retail",              COMMERCIAL,  MEDIUM, (15, 50)),
+    "Supermarket":         _bt("Supermarket",         COMMERCIAL,  LARGE,  (30, 80)),
+    "Hotel":               _bt("Hotel",               COMMERCIAL,  LARGE,  (20, 60)),
+    # Industrial
+    "Factory":             _bt("Factory",             INDUSTRIAL,  LARGE,  (40, 150)),
+    "Warehouse":           _bt("Warehouse",           INDUSTRIAL,  MEDIUM, (15, 50)),
+    "Distribution Center": _bt("Distribution Center", INDUSTRIAL,  LARGE,  (30, 100)),
+    # Education
+    "Elementary":          _bt("Elementary",          EDUCATION,   MEDIUM, (10, 40)),
+    "High School":         _bt("High School",         EDUCATION,   LARGE,  (20, 80)),
+    "University":          _bt("University",          EDUCATION,   LARGE,  (80, 300)),
+    # Public Services
+    "Hospital":            _bt("Hospital",            PUBLIC_SERVICES, LARGE,  (40, 150)),
+    "Police":              _bt("Police",              PUBLIC_SERVICES, SMALL,  (10, 30)),
+    "Fire":                _bt("Fire",                PUBLIC_SERVICES, SMALL,  (8, 20)),
+    "Government":          _bt("Government",          PUBLIC_SERVICES, MEDIUM, (15, 50)),
+    "Library":             _bt("Library",             PUBLIC_SERVICES, SMALL,  (5, 20)),
+    # Recreation
+    "Park":                _bt("Park",                RECREATION,  MEDIUM, (5, 30)),
+    "Sports Complex":      _bt("Sports Complex",      RECREATION,  LARGE,  (20, 80)),
+    "Stadium":             _bt("Stadium",             RECREATION,  LARGE,  (50, 250)),
+    "Museum":              _bt("Museum",              RECREATION,  MEDIUM, (15, 60)),
+    "Theater":             _bt("Theater",             RECREATION,  MEDIUM, (20, 70)),
+}
+
+# Back-compat aliases: maps saved with the old archetype names (and the legacy
+# default "House") still resolve to a sensible current type, so old saves and
+# defaults keep working without a migration pass.
+_TYPE_ALIASES = {
+    "House": "Small House",
+    "Apartment": "Large Apartment",
+    "Small Office": "Small Business",
+    "Large Office": "Large Business",
+    "Store": "Retail",
+    "School": "High School",
+}
+for _old, _new in _TYPE_ALIASES.items():
+    BUILDING_TYPES[_old] = BUILDING_TYPES[_new]
+
+
+def building_type_of(building):
+    """The BuildingType a placed Building instance references (None if its
+    type name is unknown)."""
+    return BUILDING_TYPES.get(building.building_type)
+
+
+# Default per-category demand multipliers (Phase 3 will let the user change
+# these from the UI). A multiplier scales how many vehicles each building of
+# that category sources, without touching the building's own randomized roll.
+DEFAULT_DEMAND_MULTIPLIERS = {c: 1.0 for c in CATEGORIES}
 
 
 # ----------------------------------------------------------------------
@@ -166,7 +316,7 @@ class Trip:
     """One generated trip: travel from one building's attached node to
     another's, departing at a random time within the applicable window.
     `depart_hour` is a 24h decimal time. Feed (origin_node_id, dest_node_id)
-    straight into TrafficSimulation.spawn_vehicle()."""
+    straight into TrafficSimulation.spawn_trip()."""
     origin_node_id: int
     dest_node_id: int
     depart_hour: float
@@ -189,51 +339,112 @@ def _buildings_by_category(network):
     return groups
 
 
-def generate_trips(network, rng, limit=None, weekend=False):
+def _building_seed(building):
+    """The stable RNG seed for a placed building. Buildings carry an explicit
+    `seed`; fall back to the id so older instances are still deterministic."""
+    seed = getattr(building, "seed", None)
+    return building.id if seed is None else seed
+
+
+def _rng(*parts):
+    """A Random seeded from the given parts. random.Random rejects tuples, so
+    parts are joined into a single stable string key."""
+    return random.Random("|".join(str(p) for p in parts))
+
+
+def building_vehicle_count(building, btype=None):
+    """How many vehicles this placed building sources per day. Derived ONLY
+    from the building's stable seed (NOT the day), so the count is constant
+    across days and changes only when the building is reseeded."""
+    if btype is None:
+        btype = BUILDING_TYPES.get(building.building_type)
+    if btype is None:
+        return 0
+    lo, hi = btype.count_range
+    return _rng("count", _building_seed(building)).randint(lo, hi)
+
+
+def _pick_choice(choices, rng):
+    """Weighted pick among an activity's DestChoices."""
+    total = sum(c.weight for c in choices)
+    if total <= 0:
+        return None
+    r = rng.uniform(0, total)
+    upto = 0.0
+    for c in choices:
+        upto += c.weight
+        if r <= upto:
+            return c
+    return choices[-1]
+
+
+def generate_trips(network, day_index=0, weekend=False, limit=None,
+                   demand_multipliers=None):
     """Generate one day's trips for every building on `network`.
 
-    For each travel pattern in each period, every origin building of the
-    source category sends `capacity` trips to randomly chosen destination
-    buildings of the target category. Each trip departs at a random time in
-    the applicable window. Returns a list[Trip] sorted by departure time.
+    Each connected building rolls a stable vehicle count (from its seed), then
+    for each activity in its profile distributes those vehicles across the
+    activity's weighted destination choices. Non-STAY picks become trips to a
+    randomly chosen building of the target category, departing at a random time
+    in the activity's window. Returns a list[Trip] sorted by departure time.
 
-    `weekend` selects the pattern set: weekdays run the work/school commute
-    (TRAVEL_PATTERNS); weekends have NO WORK and run home<->leisure trips
-    (WEEKEND_TRAVEL_PATTERNS) instead.
+    Determinism: every random draw is seeded from (building seed, day_index),
+    so a given map replays identically day-to-day while still varying across
+    days. `weekend` selects each type's weekday vs weekend activity profile.
+
+    `demand_multipliers` (category -> float) scales each category's per-building
+    vehicle count without changing the buildings' randomized characteristics;
+    defaults to 1.0 everywhere (Phase 3 UI will drive this).
 
     `limit`, if given, randomly samples down to that many trips (keeping a
     spread across the day), useful for an on-screen demo where the full,
     realistic trip count would be too many vehicles to watch at once.
 
-    Pure and deterministic given `rng` (pass random.Random(seed)). Reads the
-    network read-only; spawns nothing itself.
+    Pure and deterministic. Reads the network read-only; spawns nothing.
     """
     groups = _buildings_by_category(network)
-    trips = []
+    multipliers = dict(DEFAULT_DEMAND_MULTIPLIERS)
+    if demand_multipliers:
+        multipliers.update(demand_multipliers)
 
-    pattern_set = WEEKEND_TRAVEL_PATTERNS if weekend else TRAVEL_PATTERNS
-    for period, patterns in pattern_set.items():
-        for src_cat, dst_cat in patterns:
-            origins = groups.get(src_cat, [])
-            dests = groups.get(dst_cat, [])
-            if not origins or not dests:
+    trips = []
+    for category in CATEGORIES:
+        mult = multipliers.get(category, 1.0)
+        for origin in groups[category]:
+            bt = BUILDING_TYPES.get(origin.building_type)
+            if bt is None:
                 continue
-            lo, hi = _departure_window(period, dst_cat)
-            for origin in origins:
-                src_type = BUILDING_TYPES[origin.building_type]
-                for _ in range(src_type.capacity):
+            profile = bt.weekend_profile if weekend else bt.weekday_profile
+            if not profile:
+                continue
+            count = max(0, round(building_vehicle_count(origin, bt) * mult))
+            if count == 0:
+                continue
+            seed = _building_seed(origin)
+            for ai, activity in enumerate(profile):
+                rng = _rng("trips", seed, day_index, ai)
+                lo, hi = activity.window
+                for _ in range(count):
+                    choice = _pick_choice(activity.choices, rng)
+                    if choice is None or choice.dest_category is STAY:
+                        continue
+                    dests = groups.get(choice.dest_category)
+                    if not dests:
+                        continue
                     dest = rng.choice(dests)
+                    if dest is origin:
+                        continue  # no zero-length self-trip
                     trips.append(Trip(
                         origin_node_id=rng.choice(origin.connection_node_ids),
                         dest_node_id=rng.choice(dest.connection_node_ids),
                         depart_hour=rng.uniform(lo, hi),
                         origin_building_id=origin.id,
                         dest_building_id=dest.id,
-                        period=period,
+                        period=activity.period,
                     ))
 
     if limit is not None and len(trips) > limit:
-        trips = rng.sample(trips, limit)
+        trips = _rng("limit", day_index).sample(trips, limit)
 
     trips.sort(key=lambda t: t.depart_hour)
     return trips

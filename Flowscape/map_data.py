@@ -91,6 +91,7 @@ def building_to_dict(building):
         "x": building.x,
         "y": building.y,
         "connection_node_ids": list(building.connection_node_ids),
+        "seed": building.seed,
         "data": building.data,
     }
 
@@ -98,10 +99,11 @@ def building_to_dict(building):
 def building_from_dict(d):
     return Building(
         id=d["id"],
-        building_type=d.get("building_type", "House"),
+        building_type=d.get("building_type", "Small House"),
         x=d.get("x", 0.0),
         y=d.get("y", 0.0),
         connection_node_ids=list(d.get("connection_node_ids", [])),
+        seed=d.get("seed"),
         data=d.get("data", {}),
     )
 

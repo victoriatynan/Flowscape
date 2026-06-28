@@ -81,13 +81,14 @@ from snap_mode import (SnapModeController, SnapModePanel, SNAP_AUTO, SNAP_STRAIG
                         SNAP_CURVE, SNAP_MODE_LABELS)
 from lane_graph import build_lane_graph, lane_graph_visual_layers
 from traffic_sim import TrafficSimulation
-from destinations import (RESIDENTIAL, OFFICE, RETAIL, SCHOOL, RECREATION,
-                          SMALL, MEDIUM, LARGE, BUILDING_TYPES, generate_trips)
+from destinations import (RESIDENTIAL, COMMERCIAL, INDUSTRIAL, EDUCATION,
+                          PUBLIC_SERVICES, RECREATION, SMALL, MEDIUM, LARGE,
+                          BUILDING_TYPES, generate_trips)
 from sim_clock import TripScheduler
 from test_city import create_test_city
 from undo_history import UndoStack, MoveTransaction
 from inspector_panel import InspectorPanel
-from ui_widgets import ConfirmDialog
+from ui_widgets import ConfirmDialog, ScrollContainer
 from intersection_control import CONTROL_TYPE_LABELS
 
 
@@ -149,17 +150,26 @@ def prompt_save_map_path(initial_dir=None, initial_name="untitled"):
 # Building footprint rendering (UI only: reads BuildingType data, draws it).
 BUILDING_CATEGORY_COLORS = {
     RESIDENTIAL: (95, 175, 95),
-    OFFICE: (90, 135, 215),
-    RETAIL: (225, 165, 75),
-    SCHOOL: (210, 95, 95),
+    COMMERCIAL: (90, 135, 215),
+    INDUSTRIAL: (150, 130, 100),
+    EDUCATION: (210, 95, 95),
+    PUBLIC_SERVICES: (180, 110, 200),
     RECREATION: (120, 200, 135),
 }
 BUILDING_DEFAULT_COLOR = (180, 180, 180)
 BUILDING_SIZE_FT = {SMALL: 30.0, MEDIUM: 55.0, LARGE: 80.0}
 BUILDING_FILL_ALPHA = 150
-# Building tool: ordered archetypes for the picker, placement offset/feel.
-BUILDING_TYPE_ORDER = ["House", "Apartment", "Small Office", "Large Office",
-                       "Store", "School", "Park"]
+# Building tool: ordered archetypes for the picker (grouped by category),
+# placement offset/feel.
+BUILDING_TYPE_ORDER = [
+    "Small House", "Large House", "Small Apartment", "Large Apartment",
+    "Small Business", "Large Business", "Restaurant", "Cafe", "Retail",
+    "Supermarket", "Hotel",
+    "Factory", "Warehouse", "Distribution Center",
+    "Elementary", "High School", "University",
+    "Hospital", "Police", "Fire", "Government", "Library",
+    "Park", "Sports Complex", "Stadium", "Museum", "Theater",
+]
 BUILDING_PLACE_OFFSET = 45.0    # ft: footprint sits this far off its node
 BUILDING_PREVIEW_ALPHA = 90     # ghost footprint while the tool is active
 
@@ -169,7 +179,6 @@ BUILDING_PREVIEW_ALPHA = 90     # ghost footprint while the tool is active
 DEMO_TRIP_LIMIT = 300       # per DAY
 DEMO_START_HOUR = 6.5
 DEMO_HOURS_PER_SEC = 0.4
-DEMO_SEED = 0               # base seed; each day uses DEMO_SEED + day_index
 # "Trips at once": live cap on concurrent cars (slider). When at the cap, a
 # due departure waits until a car finishes its trip.
 TRIPS_AT_ONCE_MIN = 5
@@ -398,10 +407,16 @@ class RoadNetwork:
         self._next_zone_id = 1
         self._next_building_id = 1
 
-    def add_building(self, x, y, connection_node_ids=None, building_type="House", data=None):
-        building = Building(id=self._next_building_id, x=x, y=y,
+    def add_building(self, x, y, connection_node_ids=None,
+                     building_type="Small House", data=None, seed=None):
+        bid = self._next_building_id
+        # Give each placement a stable seed so its randomized demand (vehicle
+        # count, activity mix, departures) is reproducible. Default to the id:
+        # deterministic, and re-rollable later by assigning a fresh seed.
+        building = Building(id=bid, x=x, y=y,
                              building_type=building_type,
                              connection_node_ids=list(connection_node_ids or []),
+                             seed=bid if seed is None else seed,
                              data=data or {})
         self.buildings[building.id] = building
         self._next_building_id += 1
@@ -1030,44 +1045,76 @@ class SimPanel:
 
 class BuildingPanel:
     """Sidebar building-type picker, shown only while the Building tool is
-    active: a radio list of the archetypes with a category-color swatch. Pure
-    UI that reports the clicked type; the active type lives on the controller."""
+    active: a scrollable radio list of the archetypes, grouped by category,
+    each with a category-color swatch. The catalogue is long, so the list owns
+    its own vertical scroll. Pure UI that reports the clicked type; the active
+    type lives on the controller."""
 
     HEADER_GAP = 6
-    ROW_GAP = 5
-    BUTTON_HEIGHT = 26
+    GROUP_GAP = 8
+    ROW_GAP = 4
+    BUTTON_HEIGHT = 24
     SIDE_MARGIN = 16
 
     def __init__(self, font, header_font):
         self.font = font
         self.header_font = header_font
-        self._rects = []   # [(type_name, rect), ...], refreshed each draw()
+        self._rects = []   # [(type_name, rect), ...] in screen coords
+        self._vp = None    # last viewport rect (for hit-testing / wheel)
+        self.scroll = ScrollContainer()
 
-    def draw(self, surface, rect, y, active_type):
-        x = rect.x + self.SIDE_MARGIN
-        width = rect.width - 2 * self.SIDE_MARGIN
+    def draw(self, surface, viewport, active_type, mouse_pos=None):
+        """Draw the picker inside `viewport` and scroll internally. The pinned
+        'Building' header sits at the top; the type list scrolls below it."""
+        self._vp = viewport
+        x = viewport.x + self.SIDE_MARGIN
+        width = viewport.width - 2 * self.SIDE_MARGIN
+
         header = self.header_font.render("Building", True, COLOR_SIDEBAR_HEADER)
-        surface.blit(header, (x, y))
-        y += header.get_height() + self.HEADER_GAP
+        surface.blit(header, (x, viewport.y))
+        body_top = viewport.y + header.get_height() + self.HEADER_GAP
+        body = pygame.Rect(viewport.x, body_top, viewport.width,
+                           max(0, viewport.bottom - body_top))
 
+        ox, oy = self.scroll.begin(surface, body)
+        x = ox + self.SIDE_MARGIN
+        y = oy
         self._rects = []
+        last_cat = None
         for name in BUILDING_TYPE_ORDER:
-            r = pygame.Rect(x, y, width, self.BUTTON_HEIGHT)
             bt = BUILDING_TYPES.get(name)
-            swatch = (BUILDING_CATEGORY_COLORS.get(bt.category, BUILDING_DEFAULT_COLOR)
+            cat = bt.category if bt else None
+            if cat != last_cat:
+                if last_cat is not None:
+                    y += self.GROUP_GAP
+                cat_label = self.font.render((cat or "Other").upper(), True,
+                                             COLOR_SIDEBAR_HEADER)
+                surface.blit(cat_label, (x, y))
+                y += cat_label.get_height() + 2
+                last_cat = cat
+            r = pygame.Rect(x, y, width, self.BUTTON_HEIGHT)
+            swatch = (BUILDING_CATEGORY_COLORS.get(cat, BUILDING_DEFAULT_COLOR)
                       if bt else BUILDING_DEFAULT_COLOR)
             active = (name == active_type)
             pygame.draw.rect(surface, COLOR_BUTTON_ACTIVE if active else COLOR_BUTTON,
                              r, border_radius=4)
             pygame.draw.rect(surface, swatch,
-                             pygame.Rect(r.x + 6, r.y + 6, 14, r.height - 12), border_radius=2)
+                             pygame.Rect(r.x + 6, r.y + 6, 12, r.height - 12), border_radius=2)
             label = self.font.render(name, True, COLOR_BUTTON_TEXT)
-            surface.blit(label, (r.x + 28, r.y + (r.height - label.get_height()) // 2))
+            surface.blit(label, (r.x + 26, r.y + (r.height - label.get_height()) // 2))
             self._rects.append((name, r))
             y += self.BUTTON_HEIGHT + self.ROW_GAP
-        return y
+        self.scroll.end(surface, y - oy)
+
+    def contains(self, pos):
+        return self._vp is not None and self._vp.collidepoint(pos)
+
+    def handle_wheel(self, dy):
+        return self.scroll.handle_wheel(dy)
 
     def handle_click(self, pos):
+        if self._vp is None or not self._vp.collidepoint(pos):
+            return None
         for name, r in self._rects:
             if r.collidepoint(pos):
                 return name
@@ -1246,10 +1293,13 @@ class Sidebar:
         # Properties/Inspector for the selected object (shown when one is
         # selected; replaces the instructions area). Owns its own scrolling.
         self.inspector_panel = InspectorPanel(font, header_font)
+        # Scrolls the whole region under the toolbar (panels + instructions)
+        # as one unit when it overflows the sidebar height.
+        self.content_scroll = ScrollContainer()
 
-    def draw(self, rect, current_tool, status_message="", scroll=0, context_hint="",
+    def draw(self, rect, current_tool, status_message="", context_hint="",
              hovered=None, snap_mode=SNAP_AUTO, trips_on=False, paths_on=True,
-             trips_value=TRIPS_AT_ONCE_DEFAULT, active_building_type="House",
+             trips_value=TRIPS_AT_ONCE_DEFAULT, active_building_type="Small House",
              grid_enabled=False, grid_size=GRID_SIZE_DEFAULT, clock_24h=True,
              mouse_pos=None, line_weight=1.0, width_scale=1.0,
              network=None, selected_node=None):
@@ -1270,15 +1320,40 @@ class Sidebar:
                 self._draw_tooltip(rect, hovered)
             return
 
-        x = rect.x + 16
-        y = self.toolbar.full_bottom(rect) + 4
+        top = self.toolbar.full_bottom(rect) + 4
+
+        # The Building tool draws the always-on panels fixed, then hands the
+        # rest of the sidebar to its own scrolling palette (own ScrollContainer).
+        if current_tool == TOOL_BUILDING:
+            y = top
+            y = self.snap_panel.draw(self.surface, rect, y, snap_mode) + 10
+            y = self.sim_panel.draw(self.surface, rect, y, trips_on=trips_on,
+                                    paths_on=paths_on, trips_value=trips_value) + 8
+            y = self.settings_panel.draw(self.surface, rect, y, clock_24h,
+                                         line_weight, width_scale) + 8
+            vp = pygame.Rect(rect.x, y, rect.width, rect.bottom - y)
+            self.building_panel.draw(self.surface, vp, active_building_type, mouse_pos)
+            if hovered is not None:
+                self._draw_tooltip(rect, hovered)
+            if mouse_pos is not None:
+                self._panel_tooltip(self.sim_panel._trips_rect, mouse_pos,
+                                    "Trips", "Start / stop the daily trip simulation")
+            return
+
+        # Every other tool: the whole region under the toolbar scrolls together
+        # as one unit (panels + active-tool label + instructions). The toolbar
+        # buttons stay pinned above so tools are always reachable. Panels store
+        # their hit rects at draw time, so the scroll offset carries straight
+        # through to click handling.
+        body = pygame.Rect(rect.x, top, rect.width, rect.bottom - top)
+        ox, oy = self.content_scroll.begin(self.surface, body)
+        x = ox + 16
+        y = oy
         y = self.snap_panel.draw(self.surface, rect, y, snap_mode) + 10
         y = self.sim_panel.draw(self.surface, rect, y, trips_on=trips_on,
                                 paths_on=paths_on, trips_value=trips_value) + 8
         y = self.settings_panel.draw(self.surface, rect, y, clock_24h,
                                      line_weight, width_scale) + 8
-        if current_tool == TOOL_BUILDING:
-            y = self.building_panel.draw(self.surface, rect, y, active_building_type) + 8
         if current_tool in (TOOL_NODE, TOOL_ROAD):
             y = self.grid_panel.draw(self.surface, rect, y, grid_enabled, grid_size) + 8
 
@@ -1292,15 +1367,7 @@ class Sidebar:
             self.surface.blit(hint_surf, (x, y))
             y += 22
 
-        content_top = y + 8
-
-        # Clip instructions to the area below the toolbar so scrolling
-        # doesn't draw over the buttons.
-        clip_rect = pygame.Rect(rect.x, content_top, rect.width, rect.bottom - content_top)
-        prev_clip = self.surface.get_clip()
-        self.surface.set_clip(clip_rect)
-
-        y = content_top - scroll
+        y += 8
         for text, color in INSTRUCTIONS:
             if text == "":
                 y += 10
@@ -1315,7 +1382,7 @@ class Sidebar:
             label = self.font.render(status_message, True, COLOR_SIDEBAR_HEADER)
             self.surface.blit(label, (x, y))
 
-        self.surface.set_clip(prev_clip)
+        self.content_scroll.end(self.surface, (y - oy) + 8)
 
         # Hover tooltip, drawn last so it sits on top of everything else.
         if hovered is not None:
@@ -2956,7 +3023,6 @@ class InputController:
 
         self.debug = False
         self.status_message = ""
-        self.sidebar_scroll = 0
         # Standard desktop save workflow: the file the map is currently bound
         # to. None means "never saved" -- the next Save prompts via the native
         # dialog (Save As). Set on a successful Save As or Load; reused by Save
@@ -3570,7 +3636,7 @@ class InputController:
             # day gets its own deterministic rng so days vary but replay the
             # same. The scheduler calls this once per day, forever.
             weekend = (day_index % 7) >= 5
-            return generate_trips(self.network, random.Random(DEMO_SEED + day_index),
+            return generate_trips(self.network, day_index=day_index,
                                   limit=DEMO_TRIP_LIMIT, weekend=weekend)
 
         if not day_trips(0):
@@ -3973,21 +4039,28 @@ def main():
                     if inspector_action is not None:
                         _apply_inspector_action(controller, inspector_action)
                         continue
+                    # The scrolling panels can drift their hit rects up under
+                    # the pinned toolbar, so only let them claim clicks that
+                    # land below the toolbar; toolbar clicks fall through.
+                    below_toolbar = (raw_screen_pos[1]
+                                     >= toolbar.full_bottom(sidebar_rect))
                     # Snap Mode overlay panel first; falls through to the
                     # toolbar buttons if the click missed it.
-                    snap_clicked = sidebar.snap_panel.handle_click(raw_screen_pos)
-                    sim_clicked = (None if snap_clicked is not None
-                                   else sidebar.sim_panel.handle_click(raw_screen_pos))
+                    snap_clicked = (sidebar.snap_panel.handle_click(raw_screen_pos)
+                                    if below_toolbar else None)
+                    sim_clicked = (sidebar.sim_panel.handle_click(raw_screen_pos)
+                                   if (below_toolbar and snap_clicked is None) else None)
                     building_clicked = (None if (snap_clicked is not None or sim_clicked is not None)
                                         else sidebar.building_panel.handle_click(raw_screen_pos))
                     grid_clicked = (sidebar.grid_panel.handle_click(raw_screen_pos)
-                                    if (snap_clicked is None and sim_clicked is None
+                                    if (below_toolbar and snap_clicked is None and sim_clicked is None
                                         and building_clicked is None
                                         and controller.current_tool in (TOOL_NODE, TOOL_ROAD))
                                     else None)
-                    settings_clicked = (None if (snap_clicked or sim_clicked or building_clicked
-                                                 or grid_clicked) else
-                                        sidebar.settings_panel.handle_click(raw_screen_pos))
+                    settings_clicked = (sidebar.settings_panel.handle_click(raw_screen_pos)
+                                        if (below_toolbar and not (snap_clicked or sim_clicked
+                                                                   or building_clicked or grid_clicked))
+                                        else None)
                     if settings_clicked == "clock":
                         controller.clock_24h = not controller.clock_24h
                         controller.status_message = (
@@ -4048,8 +4121,12 @@ def main():
                 if (controller.selected_node is not None
                         and sidebar.inspector_panel.handle_wheel(event.y)):
                     pass
+                elif (controller.current_tool == TOOL_BUILDING
+                        and sidebar.building_panel.contains(raw_screen_pos)
+                        and sidebar.building_panel.handle_wheel(event.y)):
+                    pass
                 else:
-                    controller.sidebar_scroll = max(0, controller.sidebar_scroll - event.y * 20)
+                    sidebar.content_scroll.handle_wheel(event.y)
 
             elif (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
                   and in_canvas and renderer.lane_menu_buttons
@@ -4092,7 +4169,7 @@ def main():
         )
 
         sidebar.draw(sidebar_rect, controller.current_tool,
-                      controller.status_message, controller.sidebar_scroll,
+                      controller.status_message,
                       controller.get_context_hint(), hovered=hovered,
                       snap_mode=controller.placement.snap.mode,
                       trips_on=controller.trip_scheduler is not None,

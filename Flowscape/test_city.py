@@ -4,7 +4,8 @@ Handcrafted destination-system test city (the permanent fixed map).
 A deterministic RoadNetwork with a simple grid road network and a fixed set of
 buildings, the spec's reference city:
 
-    20 Houses, 2 Apartments, 1 School, 3 Offices, 2 Stores, 1 Park
+    20 Small Houses, 2 Large Apartments, 1 High School, 1 Large Business,
+    2 Small Businesses, 2 Retail, 1 Park
 
 Each building references a BuildingType (destinations.BUILDING_TYPES) and is
 attached to one grid node, so destinations.generate_trips() + the existing
@@ -20,12 +21,12 @@ BUILDING_OFFSET_FT = 45.0   # nudge each building off its road node
 
 # building_type -> count. Sums to 29.
 CITY_BUILDINGS = [
-    ("House", 20),
-    ("Apartment", 2),
-    ("School", 1),
-    ("Large Office", 1),
-    ("Small Office", 2),
-    ("Store", 2),
+    ("Small House", 20),
+    ("Large Apartment", 2),
+    ("High School", 1),
+    ("Large Business", 1),
+    ("Small Business", 2),
+    ("Retail", 2),
     ("Park", 1),
 ]
 
@@ -73,12 +74,10 @@ def create_test_city():
 
 
 if __name__ == "__main__":
-    import random
-
     net = create_test_city()
     print(f"Test city: {len(net.nodes)} nodes, {len(net.roads)} roads, "
           f"{len(net.buildings)} buildings")
-    trips = generate_trips(net, random.Random(0))
+    trips = generate_trips(net, day_index=0)
     print(f"Generated {len(trips)} trips")
     for t in trips[:8]:
         print(f"  {t.depart_hour:5.2f}h  node {t.origin_node_id} -> "
