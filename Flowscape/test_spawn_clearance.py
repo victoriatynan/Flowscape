@@ -1,15 +1,17 @@
 """
 Spawn-clearance gate test (SPAWNER concern, not decision/dynamics).
 
-Vehicles accelerate from rest, so a car that just departed is still sitting
-near its lane's start point a second later. Without a gate, a second trip
-released from the same origin lands on top of it (overlap < VEHICLE_LENGTH).
-TrafficSimulation only places a car when the departing lane's start is clear by
-SPAWN_CLEARANCE_FT; otherwise the trip is dropped (spawn returns None).
+Vehicles accelerate from rest, so a car that just departed is still near its
+lane's start a second later. Placing another on top of it would overlap
+(< VEHICLE_LENGTH). The spawner instead fills the departing lane nose-to-tail:
+each new car takes the first slot (stepping back by SPAWN_CLEARANCE_FT) that is
+clear of other cars -- a staggered SPAWN ZONE that lets one entrance/driveway
+emit a burst without overlap. When the whole departing lane is occupied, the
+spawn is refused (returns None).
 
-These tests assert (1) two same-origin trips released a moment apart never end
-up closer than a vehicle length on a shared lane, and (2) once the leader has
-cleared the start region, the next trip is allowed through again.
+These tests assert the safety invariant is preserved -- no two spawned cars end
+up closer than a vehicle length on a shared lane -- while the zone staggers
+back-to-back releases instead of blocking them, and still hard-gates a full lane.
 """
 
 import math
@@ -54,10 +56,13 @@ def _min_same_lane_distance(sim):
     return worst
 
 
-def test_back_to_back_spawn_is_gated():
-    """Releasing a second trip from the same origin ~1.25 s after the first --
-    while the first car has crept only a few feet from rest -- must NOT stack a
-    car on top of it. The repro from the bug report."""
+def test_back_to_back_spawns_stagger_without_overlap():
+    """Releasing a second trip from the same origin while the first is still near
+    the start no longer STACKS a car on it -- with the spawn zone the second
+    takes the next clear slot further along the departing lane. Both are placed,
+    and (the safety invariant the gate protects) they stay at least a vehicle
+    length apart. This is the repro from the original bug report, now handled by
+    staggering instead of dropping."""
     sim = _make_sim()
     origin, dest = _find_trip_pair(sim)
 
@@ -68,16 +73,10 @@ def test_back_to_back_spawn_is_gated():
     for _ in range(75):
         sim.update(1.0 / 60.0)
 
-    crept = math.hypot(first.pos[0] - first.segments[0]["points"][0][0],
-                       first.pos[1] - first.segments[0]["points"][0][1])
-    assert crept < SPAWN_CLEARANCE_FT, (
-        f"leader moved {crept:.1f} ft -- too far to exercise the gate")
-
-    # The gate must refuse the second trip: the start is still occupied.
     second = sim.spawn_trip(origin, dest)
-    assert second is None, "second trip should have been gated, not placed"
-
-    assert _min_same_lane_distance(sim) >= VEHICLE_LENGTH_FT
+    assert second is not None and second is not first, (
+        "the second trip should stagger into the next clear slot, not be dropped")
+    assert _min_same_lane_distance(sim) >= VEHICLE_LENGTH_FT, "and never overlap"
 
 
 def test_spawn_never_places_a_car_on_top_of_another():
@@ -108,30 +107,30 @@ def test_spawn_never_places_a_car_on_top_of_another():
     assert placed > 1, "test never exercised a successful gated spawn"
 
 
-def test_gate_reopens_once_leader_clears():
-    """The gate is not a permanent block: once the leader has driven well past
-    SPAWN_CLEARANCE_FT from the start, a fresh trip is allowed through."""
+def test_departing_lane_gates_when_full():
+    """The zone is still a hard gate: fill the departing lane nose-to-tail and a
+    further spawn is refused (None) rather than overlapping; a slot reopens once
+    the cars advance and the queue shifts forward."""
     sim = _make_sim()
     origin, dest = _find_trip_pair(sim)
 
-    first = sim.spawn_trip(origin, dest)
-    assert first is not None
+    # Fill the departing lane without advancing anyone.
+    placed = 0
+    while sim.spawn_trip(origin, dest) is not None:
+        placed += 1
+        assert placed < 100, "lane never fills -- the gate isn't limiting spawns"
+    assert placed >= 2, "the zone fits several cars nose-to-tail before it's full"
+    assert _min_same_lane_distance(sim) >= VEHICLE_LENGTH_FT, "no overlap when full"
+    assert sim.spawn_trip(origin, dest) is None, "a full departing lane gates spawns"
 
-    # Drive until the leader has left the start region with margin to spare.
-    start = first.segments[0]["points"][0]
-    for _ in range(600):
-        sim.update(1.0 / 60.0)
-        if math.hypot(first.pos[0] - start[0],
-                      first.pos[1] - start[1]) > SPAWN_CLEARANCE_FT + VEHICLE_LENGTH_FT:
-            break
-
-    second = sim.spawn_trip(origin, dest)
-    assert second is not None, "gate should reopen once the start is clear"
+    # A slot reopens when a car leaves the lane: drop one and a spawn succeeds.
+    sim.vehicles.pop()
+    assert sim.spawn_trip(origin, dest) is not None, "a freed slot admits a new car"
     assert _min_same_lane_distance(sim) >= VEHICLE_LENGTH_FT
 
 
 if __name__ == "__main__":
-    test_back_to_back_spawn_is_gated()
+    test_back_to_back_spawns_stagger_without_overlap()
     test_spawn_never_places_a_car_on_top_of_another()
-    test_gate_reopens_once_leader_clears()
-    print("spawn-clearance gate: all tests passed")
+    test_departing_lane_gates_when_full()
+    print("spawn-clearance / zone: all tests passed")

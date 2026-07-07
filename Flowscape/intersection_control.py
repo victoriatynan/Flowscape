@@ -317,6 +317,23 @@ class ReservationController(IntersectionController):
                 return reservation
         return None
 
+    def _approach_distance(self, vehicle):
+        """Along-lane distance (feet) from `vehicle` to THIS node's stop line, if
+        it is on a lane whose next connection is this junction; else None. Reads
+        only the vehicle's own compiled path -- approach detection, not anything
+        about reservations. Shared by stop-sign and yield policies."""
+        segs = getattr(vehicle, "segments", None)
+        i = getattr(vehicle, "seg_index", 0)
+        if not segs or i + 1 >= len(segs):
+            return None
+        seg = segs[i]
+        if seg["kind"] != "lane":
+            return None
+        nxt = segs[i + 1]
+        if nxt["kind"] != "connection" or nxt.get("node_id") != self.node_id:
+            return None
+        return seg["length"] - vehicle.seg_s
+
     @staticmethod
     def _movement_label(movement):
         # Compact "in_road>out_road TURN" tag: lane-pair identity + classified
@@ -480,23 +497,6 @@ class StopSignController(ReservationController):
     def _dequeue(self, vehicle):
         self._queue = [e for e in self._queue if e.vehicle is not vehicle]
 
-    def _approach_distance(self, vehicle):
-        """Along-lane distance (feet) from `vehicle` to THIS node's stop line, if
-        it is on a lane whose next connection is this junction; else None. Reads
-        only the vehicle's own compiled path -- approach detection, not anything
-        about reservations."""
-        segs = getattr(vehicle, "segments", None)
-        i = getattr(vehicle, "seg_index", 0)
-        if not segs or i + 1 >= len(segs):
-            return None
-        seg = segs[i]
-        if seg["kind"] != "lane":
-            return None
-        nxt = segs[i + 1]
-        if nxt["kind"] != "connection" or nxt.get("node_id") != self.node_id:
-            return None
-        return seg["length"] - vehicle.seg_s
-
     # --- debug visualization (extends the base's owners/waiters/transitions) -
     def visual_layers(self, network):
         layers = super().visual_layers(network)
@@ -517,6 +517,78 @@ class StopSignController(ReservationController):
         return layers
 
 
+# ----------------------------------------------------------------------
+# Yield / give-way: through-traffic has priority.
+# ----------------------------------------------------------------------
+
+# How close a conflicting priority (through) vehicle must be for a yielding
+# (turning) vehicle to wait for it (feet). Larger = more cautious merges.
+YIELD_GAP_FT = 45.0
+
+
+class YieldController(ReservationController):
+    """Yield / give-way. STRAIGHT (through) movements have priority; a vehicle
+    making a TURN defers to any conflicting priority movement that is inside the
+    junction OR approaching within `yield_gap`. Once clear it falls through to
+    the unchanged reservation logic (which still guarantees collision-free
+    exclusion), so a yield is always at least as safe as plain reservation --
+    it only changes WHO waits (turners), not the safety guarantee.
+
+    Turn-type is the priority signal (per the framework's design note), so the
+    controller stays geometry-light and needs no knowledge of road classes: a
+    driveway car turning onto a road yields to the through-traffic it crosses.
+    A geometry-aware refinement (yield only to actually-crossing directions) is
+    a future subclass concern -- deferring to all conflicting through-traffic is
+    the safe, simple give-way rule.
+    """
+
+    kind = CONTROL_YIELD
+
+    def __init__(self, node_id, yield_gap=YIELD_GAP_FT):
+        super().__init__(node_id)
+        self.yield_gap = yield_gap
+        self._priority_movements = []   # approaching STRAIGHT movements, this frame
+
+    # --- policy: a turning vehicle waits for conflicting priority traffic -----
+    def _must_yield(self, vehicle, movement):
+        for r in self.reservations:
+            if (r.vehicle is not vehicle and r.movement.turn_type == TURN_STRAIGHT
+                    and self.movements_conflict(movement, r.movement)):
+                return True             # priority traffic already in the junction
+        for m in self._priority_movements:
+            if self.movements_conflict(movement, m):
+                return True             # priority traffic approaching within the gap
+        return False
+
+    def _may_proceed(self, vehicle):
+        movement = self._movement(vehicle)
+        if movement is None or movement.turn_type == TURN_STRAIGHT:
+            return True                 # straight-through -> never yields
+        return not self._must_yield(vehicle, movement)
+
+    # --- policy gates: yield precondition, THEN the unchanged reservation logic
+    def would_permit(self, vehicle):
+        return self._may_proceed(vehicle) and super().would_permit(vehicle)
+
+    def can_enter(self, vehicle):
+        if not self._may_proceed(vehicle):
+            return False
+        return super().can_enter(vehicle)
+
+    def begin_step(self, vehicles, dt):
+        super().begin_step(vehicles, dt)
+        # Snapshot the STRAIGHT (priority) movements approaching this junction
+        # within the gap, so the per-vehicle yield check is a cheap read.
+        self._priority_movements = []
+        for v in vehicles:
+            d = self._approach_distance(v)
+            if d is None or d > self.yield_gap:
+                continue
+            m = self._movement(v)
+            if m is not None and m.turn_type == TURN_STRAIGHT:
+                self._priority_movements.append(m)
+
+
 # Registry: control kind -> controller class. Future types add an entry here
 # (e.g. CONTROLLER_TYPES["traffic_light"] = TrafficLightController); movement is
 # unaffected.
@@ -524,6 +596,7 @@ CONTROLLER_TYPES = {
     CONTROL_UNCONTROLLED: IntersectionController,
     CONTROL_RESERVATION: ReservationController,
     CONTROL_STOP_SIGN: StopSignController,
+    CONTROL_YIELD: YieldController,
 }
 
 
@@ -573,6 +646,10 @@ _CONTROL_SETTINGS = {
     CONTROL_STOP_SIGN: (
         FieldSpec("stop_duration", "Stop duration (s)", "float",
                   0.5, 10.0, 0.5, DEFAULT_STOP_DURATION_S),
+    ),
+    CONTROL_YIELD: (
+        FieldSpec("yield_gap", "Yield gap (ft)", "float",
+                  10.0, 120.0, 5.0, YIELD_GAP_FT),
     ),
     CONTROL_TRAFFIC_LIGHT: (
         FieldSpec("cycle_length", "Cycle length (s)", "float", 10.0, 180.0, 5.0, 60.0),

@@ -65,7 +65,7 @@ VEHICLE_RENDER_SCALE = 2.0
 # without this gate the new car lands on top of it (overlap < VEHICLE_LENGTH).
 # This is a SPAWNER concern only -- it decides WHETHER to place a car, never how
 # one moves; in-traffic spacing is the decision layer's car-following rule.
-SPAWN_CLEARANCE_FT = 2.0 * VEHICLE_LENGTH_FT
+SPAWN_CLEARANCE_FT = 1.6 * VEHICLE_LENGTH_FT
 
 # Top-down car sprite, source art pointing UP (head/windshield at the top,
 # taillights at the bottom). The first existing candidate wins: a clean
@@ -617,21 +617,36 @@ class TrafficSimulation:
         return segments
 
     def _spawn_on_path(self, path, connections, dest_node_id=None):
-        """Compile a lane path into traversal segments, create the Vehicle,
-        add it, and return it. Caller owns self._valid_edges. Shared by the
-        single-vehicle spawn_vehicle() and the batch spawn_trip(). Returns None
-        when the departing lane's start is not clear (see _spawn_point_clear).
-        `dest_node_id` is stored so the lane-change pass can re-route to the
-        same destination from a newly chosen lane."""
-        segments = self._compile_segments(path, connections)
+        """Compile a lane path into traversal segments, create the Vehicle at the
+        first clear slot along the departing lane, add it, and return it. Shared
+        by spawn_vehicle() and spawn_trip(). Returns None only when the WHOLE
+        departing lane is occupied. `dest_node_id` rides along for the
+        lane-change re-route.
 
-        spawn_pos = segments[0]["points"][0]
-        if not self._spawn_point_clear(spawn_pos):
+        SPAWN ZONE: rather than only the lane start, a car takes the first slot
+        (stepping back by SPAWN_CLEARANCE_FT) that is clear of other cars, so a
+        burst fills the departing lane nose-to-tail instead of one car at a time.
+        This raises a single entrance/driveway's egress throughput to about
+        lane_length / SPAWN_CLEARANCE_FT cars -- without ever overlapping (each
+        slot is clearance-checked) and without adding junctions. A longer
+        driveway is therefore a bigger off-road staging zone."""
+        segments = self._compile_segments(path, connections)
+        pts = segments[0]["points"]
+        length = segments[0]["length"]
+        spawn_arc = None
+        arc = 0.0
+        while arc <= length:
+            if self._spawn_point_clear(_point_at_arc(pts, arc)):
+                spawn_arc = arc
+                break
+            arc += SPAWN_CLEARANCE_FT
+        if spawn_arc is None:
             return None
 
         vehicle = Vehicle(path=path, current_lane=path[0], segments=segments,
-                          pos=spawn_pos, dest_node_id=dest_node_id,
-                          heading=_direction_at_arc(segments[0]["points"], 0.0))
+                          pos=_point_at_arc(pts, spawn_arc), dest_node_id=dest_node_id,
+                          heading=_direction_at_arc(pts, spawn_arc),
+                          seg_s=spawn_arc)
         self.vehicles.append(vehicle)
         return vehicle
 
@@ -659,6 +674,41 @@ class TrafficSimulation:
         vehicle = self._spawn_on_path(path, self._connections,
                                       dest_node_id=dest_node_id)
         if vehicle is None:   # no path, or the departing lane's start is occupied
+            return None
+        vehicle.dest_building_id = dest_building_id
+        return vehicle
+
+    # ------------------------------------------------------------------
+    # Spawn-queue interface (Phase 2a): resolve a route ONCE, then spawn from
+    # the precomputed path on later frames so retries never re-run pathfinding.
+    # ------------------------------------------------------------------
+    def resolve_route(self, start_node_id, dest_node_id):
+        """Resolve a lane path start->dest once, using the cached routing graph
+        (prepared lazily). Returns the path (list of lane ids) or None when no
+        path exists. The spawn queue calls this at release time."""
+        if self._edges is None:
+            self.prepare_routes()
+        return find_lane_path(self._edges,
+                              lanes_departing_node(self.network, start_node_id),
+                              lanes_arriving_node(self.network, dest_node_id))
+
+    def route_valid(self, path):
+        """Cheap structural check that a previously-resolved path still exists
+        in the current routing graph. Guards against a mid-run map edit; Phase
+        2a otherwise treats the map as frozen for the duration of a demo run."""
+        if self._connections is None or not path:
+            return False
+        return all((path[i], path[i + 1]) in self._connections
+                   for i in range(len(path) - 1))
+
+    def spawn_on_route(self, path, dest_node_id=None, dest_building_id=None):
+        """Spawn a vehicle on an ALREADY-resolved, structurally-valid path (see
+        resolve_route / route_valid). Returns the Vehicle, or None when the
+        departing lane's start is still occupied -- a transient block the spawn
+        queue retries next frame rather than dropping."""
+        vehicle = self._spawn_on_path(path, self._connections,
+                                      dest_node_id=dest_node_id)
+        if vehicle is None:
             return None
         vehicle.dest_building_id = dest_building_id
         return vehicle

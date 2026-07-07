@@ -14,7 +14,8 @@ rules live (e.g. no work on weekends); the scheduler stays oblivious to
 what each day contains.
 
 This is the bridge between the destination DATA layer and whatever consumes
-trips: the editor wires the callback to TrafficSimulation.spawn_trip().
+trips: the editor wires the release callback to the SpawnQueue (spawn_queue.py),
+which then drains trips into TrafficSimulation under a concurrency + rate budget.
 """
 
 HOURS_PER_DAY = 24

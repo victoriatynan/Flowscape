@@ -7,9 +7,11 @@ buildings, the spec's reference city:
     20 Small Houses, 2 Large Apartments, 1 High School, 1 Large Business,
     2 Small Businesses, 2 Retail, 1 Park
 
-Each building references a BuildingType (destinations.BUILDING_TYPES) and is
-attached to one grid node, so destinations.generate_trips() + the existing
-traffic_sim can drive it end to end. Pure data: no rendering, no input.
+Each building references a BuildingType (destinations.BUILDING_TYPES) and gets
+its own DRIVEWAY (model B): an off-road entrance node + a short driveway road
+into its grid node, so cars originate off the road and merge on. This lets
+destinations.generate_trips() + the existing traffic_sim drive it end to end.
+Pure data: no rendering, no input.
 """
 
 from destinations import generate_trips  # noqa: F401 (convenience re-export)
@@ -63,12 +65,12 @@ def create_test_city():
     nodes = _grid_node_order(grid)
     flat = [bt for bt, count in CITY_BUILDINGS for _ in range(count)]
     for building_type, node in zip(flat, nodes):
-        net.add_building(
-            x=node.x + BUILDING_OFFSET_FT,
-            y=node.y + BUILDING_OFFSET_FT,
-            connection_node_ids=[node.id],
-            building_type=building_type,
-        )
+        # Each building gets its own driveway (model B): an off-road entrance
+        # node + a short driveway road into the grid node, so cars originate off
+        # the road and merge on. Same path the Building tool uses.
+        net.add_building_with_driveway(
+            (node.x + BUILDING_OFFSET_FT, node.y + BUILDING_OFFSET_FT),
+            node.id, building_type=building_type)
 
     return net
 

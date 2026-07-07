@@ -408,7 +408,19 @@ ROAD_PROFILE_PRESETS = {
         center_marking_style="none", edge_line_style="solid_white",
         shoulder_type=SHOULDER_PAVED, shoulder_width=4.0, median_width=8.0,
     ),
+    # Building access road: narrow, unmarked, no shoulder. One lane each way so
+    # cars can enter and leave. total_width = 2 * 5 = 10 ft (keep the road's
+    # `width` in sync when placing a driveway, so the asphalt matches).
+    "driveway": RoadProfile(
+        lane_width=5.0, lanes_per_direction=1,
+        center_marking_style="none", edge_line_style="none",
+        shoulder_type=SHOULDER_NONE, shoulder_width=0.0,
+    ),
 }
+
+# Asphalt width (Road.width) to pair with the "driveway" profile so the surface
+# polygon matches the narrow profile.
+DRIVEWAY_ROAD_WIDTH = 10.0
 
 DEFAULT_PROFILE = ROAD_PROFILE_PRESETS["urban"]
 

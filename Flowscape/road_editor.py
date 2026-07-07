@@ -85,11 +85,12 @@ from destinations import (RESIDENTIAL, COMMERCIAL, INDUSTRIAL, EDUCATION,
                           PUBLIC_SERVICES, RECREATION, SMALL, MEDIUM, LARGE,
                           BUILDING_TYPES, generate_trips)
 from sim_clock import TripScheduler
+from spawn_queue import SpawnQueue, SpawnResult
 from test_city import create_test_city
 from undo_history import UndoStack, MoveTransaction
 from inspector_panel import InspectorPanel
 from ui_widgets import ConfirmDialog, ScrollContainer
-from intersection_control import CONTROL_TYPE_LABELS
+from intersection_control import CONTROL_TYPE_LABELS, CONTROL_YIELD, CONTROL_STOP_SIGN
 
 
 NODE_RADIUS = 8
@@ -171,14 +172,30 @@ BUILDING_TYPE_ORDER = [
     "Park", "Sports Complex", "Stadium", "Museum", "Theater",
 ]
 BUILDING_PLACE_OFFSET = 45.0    # ft: footprint sits this far off its node
+STOP_SIGN_FT = 9.0              # world height of the small stop-sign icon (~real)
 BUILDING_PREVIEW_ALPHA = 90     # ghost footprint while the tool is active
 
 # Trip demo (T key / Trips button): a watchable subset of the day's trips,
 # played back over an accelerated clock. The full realistic count would be
 # too many cars.
-DEMO_TRIP_LIMIT = 300       # per DAY
+DEMO_TRIP_LIMIT = 100       # per DAY (≈ demo throughput, so few trips expire)
 DEMO_START_HOUR = 6.5
-DEMO_HOURS_PER_SEC = 0.4
+DEMO_HOURS_PER_SEC = 0.1    # ~4-min day; slow enough that a building's cars
+                            # space out and clear their origin instead of
+                            # expiring at the spawn-clearance gate.
+# Clock-speed presets (sim hours per real second) the user cycles through with
+# the Clock button. Slower = fewer trips expire (the burst gets more real time
+# to drain) but a longer day to watch. Default is DEMO_HOURS_PER_SEC.
+CLOCK_SPEEDS = (0.4, 0.2, 0.1, 0.05)
+
+
+def clock_day_length_label(hours_per_sec):
+    """The real-time length of a 24h day at this clock speed, e.g. '4 min/day'."""
+    secs = 24.0 / hours_per_sec
+    return f"{secs / 60:.0f} min/day" if secs >= 60 else f"{secs:.0f} s/day"
+# Clamp the per-frame sim advance so a frame hitch/stall can't dump a huge
+# batch of due trips into the spawn queue at once (Phase 2a).
+MAX_SIM_STEP_SEC = 0.1
 # "Trips at once": live cap on concurrent cars (slider). When at the cap, a
 # due departure waits until a car finishes its trip.
 TRIPS_AT_ONCE_MIN = 5
@@ -428,6 +445,45 @@ class RoadNetwork:
         building = self.buildings[building_id]
         if node_id not in building.connection_node_ids:
             building.connection_node_ids.append(node_id)
+
+    def add_building_with_driveway(self, footprint_pos, main_node_id,
+                                   building_type="Small House"):
+        """Place a building with its first DRIVEWAY (model B). Shared by the
+        Building tool and create_test_city. Extra driveways (higher egress
+        throughput) can be added with add_driveway_to_building. Returns the
+        building."""
+        fx, fy = footprint_pos
+        building = self.add_building(fx, fy, connection_node_ids=[],
+                                     building_type=building_type)
+        self.add_driveway_to_building(building.id, footprint_pos, main_node_id)
+        return building
+
+    def add_driveway_to_building(self, building_id, entrance_pos, main_node_id):
+        """Give a building a DRIVEWAY: an off-road entrance node at `entrance_pos`
+        + a short, narrow driveway road into `main_node_id` (which becomes a
+        yielding junction). Cars originate at the entrance -- off the main road --
+        and the existing routing / spawn / merge carry them on.
+
+        A building may have SEVERAL driveways: generation picks among its entrance
+        nodes (rng.choice), so the driveways spawn cars IN PARALLEL -- the fix for
+        'a big building's fleet can't clear through one driveway'. Entrance nodes
+        should be spaced apart (> spawn clearance) so they don't gate each other.
+        Each driveway is recorded on building.data['driveways'] for the delete
+        lifecycle. Returns the driveway road."""
+        building = self.buildings[building_id]
+        ex, ey = entrance_pos
+        entrance = self.add_node(ex, ey)
+        driveway = self.add_road(entrance.id, main_node_id)
+        driveway.width = road_style.DRIVEWAY_ROAD_WIDTH
+        driveway.data["profile"] = {"preset": "driveway"}
+        # The driveway car turns onto the main road, so the junction YIELDS:
+        # through (STRAIGHT) traffic keeps priority, turners defer. Safe even at
+        # a shared intersection (the base reservation still prevents collisions).
+        self.nodes[main_node_id].data["control"] = CONTROL_YIELD
+        building.connection_node_ids.append(entrance.id)
+        building.data.setdefault("driveways", []).append(
+            {"entrance": entrance.id, "road": driveway.id, "main": main_node_id})
+        return driveway
 
     def is_intersection(self, node_id):
         """True for a junction node (3+ connected roads). 1 road is an
@@ -955,12 +1011,14 @@ class SimPanel:
         self.header_font = header_font
         self._trips_rect = None
         self._paths_rect = None
+        self._clock_rect = None
         self._track_rect = None
         self.dragging = False
         self._vmin = TRIPS_AT_ONCE_MIN
         self._vmax = TRIPS_AT_ONCE_MAX
 
-    def draw(self, surface, rect, y, *, trips_on, paths_on, trips_value):
+    def draw(self, surface, rect, y, *, trips_on, paths_on, trips_value,
+             clock_speed=DEMO_HOURS_PER_SEC):
         x = rect.x + self.SIDE_MARGIN
         width = rect.width - 2 * self.SIDE_MARGIN
 
@@ -1002,6 +1060,13 @@ class SimPanel:
         knob.center = (self._value_to_x(trips_value), track_mid)
         pygame.draw.rect(surface, COLOR_BUTTON_ACTIVE, knob, border_radius=3)
         y += self.SLIDER_HEIGHT + self.ROW_GAP
+
+        # Clock-speed button: click to cycle through the speed presets. Slower =
+        # fewer trips expire, but a longer day to watch.
+        self._clock_rect = pygame.Rect(x, y, width, self.BUTTON_HEIGHT)
+        self._draw_toggle(surface, self._clock_rect,
+                          f"Clock: {clock_day_length_label(clock_speed)}", False)
+        y += self.BUTTON_HEIGHT + self.ROW_GAP
         return y
 
     def _draw_toggle(self, surface, rect, label, on):
@@ -1028,6 +1093,8 @@ class SimPanel:
             return "trips"
         if self._paths_rect and self._paths_rect.collidepoint(pos):
             return "paths"
+        if self._clock_rect and self._clock_rect.collidepoint(pos):
+            return "clock"
         if self._track_rect and self._track_rect.inflate(0, 14).collidepoint(pos):
             self.dragging = True
             return "slider"
@@ -1302,7 +1369,7 @@ class Sidebar:
              trips_value=TRIPS_AT_ONCE_DEFAULT, active_building_type="Small House",
              grid_enabled=False, grid_size=GRID_SIZE_DEFAULT, clock_24h=True,
              mouse_pos=None, line_weight=1.0, width_scale=1.0,
-             network=None, selected_node=None):
+             network=None, selected_node=None, clock_speed=DEMO_HOURS_PER_SEC):
         pygame.draw.rect(self.surface, COLOR_SIDEBAR_BG, rect)
 
         self.toolbar.draw(self.surface, rect, current_tool, hovered=hovered)
@@ -1328,7 +1395,8 @@ class Sidebar:
             y = top
             y = self.snap_panel.draw(self.surface, rect, y, snap_mode) + 10
             y = self.sim_panel.draw(self.surface, rect, y, trips_on=trips_on,
-                                    paths_on=paths_on, trips_value=trips_value) + 8
+                                    paths_on=paths_on, trips_value=trips_value,
+                                    clock_speed=clock_speed) + 8
             y = self.settings_panel.draw(self.surface, rect, y, clock_24h,
                                          line_weight, width_scale) + 8
             vp = pygame.Rect(rect.x, y, rect.width, rect.bottom - y)
@@ -1856,6 +1924,55 @@ class RoadRenderer:
         # per path so straight-line motion at constant zoom costs nothing.
         self._sprite_images = {}
         self._sprite_rendered = {}
+        # Static-scene cache: roads + buildings + markings only change when the
+        # map is edited or the camera moves, so they're rendered to this surface
+        # once and re-blitted each frame. Vehicles, nodes, previews and the HUD
+        # draw live on top. `_static_sig` is the invalidation key.
+        self._static_cache = None
+        self._static_sig = None
+
+    def _static_signature(self, network, selected_road, selected_building,
+                          debug, grid_enabled, grid_size):
+        """A cheap content key for the static layer. Changes iff something the
+        static render depends on changed (geometry, styles, camera, selection,
+        grid, debug). Computed each frame -- O(map size), microseconds here,
+        vs the tens of ms it saves by skipping the redraw."""
+        cam = self.camera
+        sig = [round(cam.offset_x, 3), round(cam.offset_y, 3), round(cam.zoom, 5),
+               self.surface.get_size(), bool(grid_enabled), grid_size, bool(debug),
+               selected_road.id if selected_road is not None else None,
+               selected_building.id if selected_building is not None else None]
+        for n in network.nodes.values():
+            sig.append((n.id, n.x, n.y, (n.data or {}).get("control")))
+        for r in network.roads.values():
+            sig.append((r.id, r.start_node_id, r.end_node_id, r.curve_offset,
+                        r.lane_count, r.width, r.is_preview, repr(r.data)))
+        for b in network.buildings.values():
+            sig.append((b.id, b.x, b.y, b.building_type,
+                        tuple(b.connection_node_ids)))
+        for z in network.zones.values():
+            sig.append((z.id, z.type, tuple(map(tuple, z.boundary_points)),
+                        repr(z.data)))
+        return hash(tuple(sig))
+
+    def _ensure_static_layer(self, network, selected_road, selected_building,
+                             debug, grid_enabled, grid_size):
+        """Re-render the cached static layer only when its signature changed."""
+        sig = self._static_signature(network, selected_road, selected_building,
+                                     debug, grid_enabled, grid_size)
+        if (sig == self._static_sig and self._static_cache is not None
+                and self._static_cache.get_size() == self.surface.get_size()):
+            return
+        self._static_sig = sig
+        cache = pygame.Surface(self.surface.get_size())
+        prev = self.surface
+        self.surface = cache            # redirect the static draws onto the cache
+        try:
+            self._draw_static_content(network, selected_road, selected_building,
+                                      debug, grid_enabled, grid_size)
+        finally:
+            self.surface = prev
+        self._static_cache = cache
 
     def _outline_px(self, world_size_ft):
         """Outline width (screen px) for an element `world_size_ft` across,
@@ -2241,12 +2358,12 @@ class RoadRenderer:
             label = self.font.render(f"Z{zone.id}:{zone.type}", True, COLOR_DEBUG_TEXT)
             self.surface.blit(label, (cx, cy))
 
-    def draw_building(self, network, building, debug, selected=False, count=None):
-        """Draw a placed building as a category-colored footprint square,
-        sized by its BuildingType's size, with a faint connector to each
-        attached road node. `count`, if given, is the live car-occupancy shown
-        centered on the footprint. Pure UI: reads building/BuildingType data,
-        draws primitives. Never mutates the graph, never persisted."""
+    def draw_building(self, network, building, debug, selected=False):
+        """Draw a placed building's static footprint: a category-colored square
+        sized by its BuildingType, with a faint connector to each attached road
+        node. The live occupancy count is drawn separately (draw_building_count)
+        because it changes every frame. Pure UI: reads building/BuildingType
+        data, draws primitives. Never mutates the graph, never persisted."""
         bt = BUILDING_TYPES.get(building.building_type)
         color = (BUILDING_CATEGORY_COLORS.get(bt.category, BUILDING_DEFAULT_COLOR)
                  if bt else BUILDING_DEFAULT_COLOR)
@@ -2281,21 +2398,22 @@ class RoadRenderer:
                              width=max(2, ow), border_radius=radius + 2)
         self.surface.blit(surf, (0, 0))
 
-        # Live car-occupancy count, centered on the footprint (with a dark
-        # pill behind it for legibility over any color).
-        if count is not None:
-            center = cam.world_to_screen(building.pos)
-            txt = self.font.render(str(count), True, (255, 255, 255))
-            pill = txt.get_rect(center=center).inflate(8, 4)
-            pill_surf = pygame.Surface(pill.size, pygame.SRCALPHA)
-            pill_surf.fill((20, 22, 26, 190))
-            self.surface.blit(pill_surf, pill.topleft)
-            self.surface.blit(txt, txt.get_rect(center=center))
-
         if debug:
             label = self.font.render(building.building_type, True, COLOR_DEBUG_TEXT)
             self.surface.blit(label, (cam.world_to_screen(building.pos)[0],
                                       cam.world_to_screen(building.pos)[1] - 16))
+
+    def draw_building_count(self, building, count):
+        """Live car-occupancy count, centered on the footprint (dark pill behind
+        it for legibility). Drawn fresh each frame, over the cached static
+        footprints, because the count changes constantly during the demo."""
+        center = self.camera.world_to_screen(building.pos)
+        txt = self.font.render(str(count), True, (255, 255, 255))
+        pill = txt.get_rect(center=center).inflate(8, 4)
+        pill_surf = pygame.Surface(pill.size, pygame.SRCALPHA)
+        pill_surf.fill((20, 22, 26, 190))
+        self.surface.blit(pill_surf, pill.topleft)
+        self.surface.blit(txt, txt.get_rect(center=center))
 
     def draw_building_preview(self, building_type, pos, node_pos):
         """Translucent ghost footprint for the Building tool. When node_pos is
@@ -2326,10 +2444,13 @@ class RoadRenderer:
             pygame.draw.rect(surf, (150, 150, 150, 200), rect, width=1, border_radius=radius)
         self.surface.blit(surf, (0, 0))
 
-    def draw_sim_clock(self, day, day_name, time_label):
+    def draw_sim_clock(self, day, day_name, time_label, fps=None):
         """Screen-fixed day/time readout, top-right of the canvas. Drawn over
-        the world so the trip-demo clock is always visible."""
+        the world so the trip-demo clock is always visible. `fps`, if given, is
+        appended so a frame-rate drop is visible at a glance."""
         text = f"{day_name}  Day {day}   {time_label}"
+        if fps is not None:
+            text += f"   {fps:4.0f} fps"
         surf = self.clock_font.render(text, True, COLOR_SIDEBAR_HEADER)
         pad = 10
         panel = pygame.Rect(0, 0, surf.get_width() + 2 * pad,
@@ -2487,11 +2608,13 @@ class RoadRenderer:
                              cam.world_to_screen((maxx, y)), 1)
             y += grid_size
 
-    def draw(self, network, preview_road, preview_geometry, preview_node, preview_snapped,
-             pending_start_node, selected_road, hovered_node, selected_node,
-             current_tool, debug, visual_layers=None, preview_snap_mode=None,
-             sim_clock=None, building_preview=None, selected_building=None,
-             building_occupancy=None, grid_enabled=False, grid_size=GRID_SIZE_DEFAULT):
+    def _draw_static_content(self, network, selected_road, selected_building,
+                             debug, grid_enabled, grid_size):
+        """Render the static map layer -- zones, building footprints, road
+        surfaces, junctions, dead-end caps, markings -- to the current surface.
+        Called by _ensure_static_layer into the cache surface. Depends only on
+        geometry / styles / camera / selection, never per-frame state, so it can
+        be cached and re-blitted across frames."""
         self.surface.fill(COLOR_BG)
 
         # Background ground layer (PLACEHOLDER grid -> future ground graphics).
@@ -2504,9 +2627,8 @@ class RoadRenderer:
         # Building footprints sit on the ground, beneath roads/nodes/overlays.
         sel_building_id = selected_building.id if selected_building is not None else None
         for building in network.buildings.values():
-            count = building_occupancy.get(building.id) if building_occupancy else None
             self.draw_building(network, building, debug,
-                               selected=(building.id == sel_building_id), count=count)
+                               selected=(building.id == sel_building_id))
 
         # Per-node collection of (left_edge_pt, right_edge_pt, surface_color)
         # contributed by each connected road's trimmed end, the basis for
@@ -2678,6 +2800,55 @@ class RoadRenderer:
                    if not r.is_preview) == 2:
                 self.draw_continuation_markings(network, node_id)
 
+        # Stop-sign icons on the approaches to any stop-sign-controlled node.
+        self.draw_stop_signs(network)
+
+    def draw_stop_signs(self, network):
+        """A small stop-sign icon on the right of each approach to a stop-sign
+        node. Static (depends only on node control + road geometry + camera), so
+        it's rendered into the cached layer, not per frame."""
+        h_px = max(6, round(self.camera.feet_to_pixels(STOP_SIGN_FT)))
+        icon = get_icon("stopsign_1", h_px)
+        if icon is None:
+            return
+        for node in network.nodes.values():
+            if (node.data or {}).get("control") != CONTROL_STOP_SIGN:
+                continue
+            for road in network.roads_for_node(node.id):
+                if road.is_preview:
+                    continue
+                ox, oy = network.outward_tangent_at_node(road, node.id)
+                # Just past the junction pavement, offset to the right of the
+                # approaching driver (approach dir = -outward; right = (-oy, ox)).
+                back = network.road_trim_at_node(road, node.id) + STOP_SIGN_FT * 0.5
+                side = get_road_profile(road).total_width() / 2.0 + STOP_SIGN_FT * 0.5
+                sx = node.x + ox * back + (-oy) * side
+                sy = node.y + oy * back + (ox) * side
+                self.surface.blit(
+                    icon, icon.get_rect(center=self.camera.world_to_screen((sx, sy))))
+
+    def draw(self, network, preview_road, preview_geometry, preview_node, preview_snapped,
+             pending_start_node, selected_road, hovered_node, selected_node,
+             current_tool, debug, visual_layers=None, preview_snap_mode=None,
+             sim_clock=None, building_preview=None, selected_building=None,
+             building_occupancy=None, grid_enabled=False, grid_size=GRID_SIZE_DEFAULT,
+             fps=None):
+        """Compose the frame: blit the cached static map, then draw the live
+        layers (occupancy counts, vehicles/overlays, nodes, previews, HUD) on
+        top. The static layer re-renders only when the map/camera/selection
+        changed (see _ensure_static_layer)."""
+        self._ensure_static_layer(network, selected_road, selected_building,
+                                  debug, grid_enabled, grid_size)
+        self.surface.blit(self._static_cache, (0, 0))
+
+        # Building occupancy counts change every frame during the demo, so they
+        # ride over the cached footprints rather than living inside the cache.
+        if building_occupancy:
+            for building in network.buildings.values():
+                count = building_occupancy.get(building.id)
+                if count is not None:
+                    self.draw_building_count(building, count)
+
         # Generic engine-provided overlays (lane graph, future congestion/
         # traffic layers) render above the finished road surfaces and
         # markings but below nodes/previews/UI, so they're visible without
@@ -2724,9 +2895,13 @@ class RoadRenderer:
         self.scale_bar.draw(self.surface, self.font, self.camera,
                              self.surface.get_rect())
 
-        # Sim clock (top-right), shown while the trip demo is running.
+        # Sim clock (top-right), shown while the trip demo is running; FPS is
+        # appended so a frame-rate drop is obvious. FPS also shows on its own
+        # (with a placeholder time) when the demo is off, for diagnosis.
         if sim_clock is not None:
-            self.draw_sim_clock(sim_clock[0], sim_clock[1], sim_clock[2])
+            self.draw_sim_clock(sim_clock[0], sim_clock[1], sim_clock[2], fps=fps)
+        elif fps is not None:
+            self.draw_sim_clock("", "", "--:--", fps=fps)
 
         # Watchdog overlay: read-only diagnostics, debug mode only. Marks
         # suspicious geometry (crossings without nodes, collapsed trims,
@@ -3037,6 +3212,9 @@ class InputController:
         # Destination trip demo (T key): a TripScheduler releasing trips over
         # an accelerated day; None when the demo is off.
         self.trip_scheduler = None
+        # Spawn queue (Phase 2a): holds released trips and drains them under the
+        # concurrency cap + a visible-rate budget. Created with the demo.
+        self.spawn_queue = None
         # Show the route overlay (path lines) under the cars (Paths toggle).
         self.show_trip_paths = True
         # Vehicle perception debug overlay (P key): leader links + following
@@ -3056,6 +3234,9 @@ class InputController:
         self.show_intersections = False
         # Live cap on concurrent cars (Trips-at-once slider).
         self.trips_at_once = TRIPS_AT_ONCE_DEFAULT
+        # Clock speed (sim hours per real second): how fast the demo day runs.
+        # User-cyclable via the Clock button; applied live to a running demo.
+        self.clock_speed = DEMO_HOURS_PER_SEC
         # Building tool: the archetype the next placed building will use.
         self.active_building_type = BUILDING_TYPE_ORDER[0]
         # Live per-building car occupancy while the trip demo runs
@@ -3437,7 +3618,13 @@ class InputController:
             self.status_message = f"Deleted node {nid} (and its roads)"
         elif self.selected_building is not None:
             bid = self.selected_building.id
+            building = self.network.buildings.get(bid)
             self.network.remove_building(bid)
+            # Remove the building's driveway(s) too: deleting each entrance node
+            # cascades to its driveway road (the entrance's only road).
+            if building is not None:
+                for dw in building.data.get("driveways", []):
+                    self.network.remove_node(dw["entrance"])
             self.selected_building = None
             self.status_message = f"Deleted building {bid}"
         else:
@@ -3553,9 +3740,12 @@ class InputController:
         if node is None:
             self.status_message = "Building tool: click a road node to attach a building"
             return
-        self.network.add_building(pos[0], pos[1], connection_node_ids=[node.id],
-                                  building_type=self.active_building_type)
-        self.status_message = f"Placed {self.active_building_type} on node {node.id}"
+        # Model B: give the building its own DRIVEWAY (off-road entrance node +
+        # narrow driveway road into the clicked node, which becomes a junction).
+        self.network.add_building_with_driveway(
+            pos, node.id, building_type=self.active_building_type)
+        self.status_message = (
+            f"Placed {self.active_building_type} with a driveway to node {node.id}")
 
     def get_building_preview(self, world_pos):
         """Ghost preview for the Building tool: (building_type, pos, node_pos),
@@ -3623,6 +3813,7 @@ class InputController:
         a TripScheduler; toggling off clears the cars."""
         if self.trip_scheduler is not None:
             self.trip_scheduler = None
+            self.spawn_queue = None
             self.traffic.reset()
             self.building_occupancy = {}   # hide counts when the demo is off
             self.status_message = "Trip demo: off"
@@ -3652,19 +3843,34 @@ class InputController:
             self.building_occupancy[b.id] = (
                 bt.capacity if (bt and bt.category == RESIDENTIAL) else 0)
         self.trip_scheduler = TripScheduler(day_trips, start_hour=DEMO_START_HOUR,
-                                             hours_per_second=DEMO_HOURS_PER_SEC)
+                                             hours_per_second=self.clock_speed)
+        self.spawn_queue = SpawnQueue()
         self.status_message = "Trip demo: on (weekly cycle; no work Sat/Sun)"
         print(self.status_message)
 
-    def update_traffic(self, dt):
-        """Per-frame simulation step: release any due trips, drop arrived
-        cars, then advance all vehicles. Replaces the bare traffic.update()
-        call so the scheduler and the V-key demo share one update path."""
+    def cycle_clock_speed(self):
+        """Advance to the next clock-speed preset (wrapping), and apply it live
+        to a running demo. Slower = fewer trips expire, but a longer day."""
+        try:
+            i = CLOCK_SPEEDS.index(self.clock_speed)
+        except ValueError:
+            i = CLOCK_SPEEDS.index(DEMO_HOURS_PER_SEC)
+        self.clock_speed = CLOCK_SPEEDS[(i + 1) % len(CLOCK_SPEEDS)]
         if self.trip_scheduler is not None:
-            # Cull first so finished cars free up slots this frame; each
-            # arrival credits its destination building's occupancy (+1),
-            # capped at that building's capacity so counts stay in a sane
-            # 0..capacity range (the demo trip flow isn't conservation-exact).
+            self.trip_scheduler.hours_per_second = self.clock_speed
+        self.status_message = f"Clock: {clock_day_length_label(self.clock_speed)}"
+
+    def update_traffic(self, dt):
+        """Per-frame simulation step. With the trip demo on, runs the spawn
+        pipeline in strict order -- cull -> release -> expire -> drain -> advance
+        -- so departures come out as a watchable stream rather than a burst.
+        The scheduler and the V-key demo share this one update path."""
+        # Clamp so a frame hitch can't advance a big batch of trips at once.
+        dt = min(dt, MAX_SIM_STEP_SEC)
+        if self.trip_scheduler is not None and self.spawn_queue is not None:
+            # 1. CULL: finished cars free up slots and credit their destination
+            #    building's occupancy (+1), capped at capacity (the demo flow
+            #    isn't conservation-exact).
             for v in self.traffic.cull_arrived():
                 bid = v.dest_building_id
                 building = self.network.buildings.get(bid) if bid is not None else None
@@ -3674,21 +3880,44 @@ class InputController:
                     self.building_occupancy[bid] = min(
                         cap, self.building_occupancy.get(bid, 0) + 1)
 
-            def spawn(trip):
-                # Release only while under the concurrency cap. A car that
-                # actually leaves drops its origin building's occupancy (-1).
-                if len(self.traffic.vehicles) < self.trips_at_once:
-                    v = self.traffic.spawn_trip(trip.origin_node_id, trip.dest_node_id,
-                                                trip.dest_building_id)
-                    if v is not None and trip.origin_building_id is not None:
-                        self.building_occupancy[trip.origin_building_id] = max(
-                            0, self.building_occupancy.get(trip.origin_building_id, 0) - 1)
+            # 2. RELEASE: the scheduler hands each due trip to the queue with its
+            #    route resolved ONCE here; a trip with no path is dropped now and
+            #    never retried (so retries never re-run pathfinding).
+            def release(trip):
+                path = self.traffic.resolve_route(trip.origin_node_id,
+                                                  trip.dest_node_id)
+                if path is None:
+                    self.spawn_queue.dropped_no_path += 1
+                    return
+                self.spawn_queue.enqueue(trip, path, self.trip_scheduler.time)
+            self.trip_scheduler.update(dt, release)
 
-            self.trip_scheduler.update(dt, spawn)
+            # 3. EXPIRE: trips that waited too long are dropped. No occupancy
+            #    credit -- the attempt failed, so the origin stays "full".
+            self.spawn_queue.expire(self.trip_scheduler.time)
+
+            # 4. DRAIN: spawn under the concurrency cap + the visible-rate budget.
+            #    A clearance-blocked origin is retried (BLOCKED), a vanished route
+            #    is dropped (INVALID); a car that leaves drops origin occupancy.
+            free_slots = max(0, self.trips_at_once - len(self.traffic.vehicles))
+
+            def do_spawn(trip, path):
+                if not self.traffic.route_valid(path):
+                    return SpawnResult.INVALID
+                v = self.traffic.spawn_on_route(path, dest_node_id=trip.dest_node_id,
+                                                dest_building_id=trip.dest_building_id)
+                return SpawnResult.SPAWNED if v is not None else SpawnResult.BLOCKED
+
+            for trip in self.spawn_queue.drain(dt, free_slots, do_spawn):
+                if trip.origin_building_id is not None:
+                    self.building_occupancy[trip.origin_building_id] = max(
+                        0, self.building_occupancy.get(trip.origin_building_id, 0) - 1)
+
             self.status_message = (
                 f"{self.trip_scheduler.day_name} (Day {self.trip_scheduler.day}) "
                 f"{self.trip_scheduler.clock_label(self.clock_24h)}  "
-                f"cars: {len(self.traffic.vehicles)}/{self.trips_at_once}")
+                f"cars: {len(self.traffic.vehicles)}/{self.trips_at_once}  "
+                f"queue: {self.spawn_queue.depth}")
         self.traffic.update(dt)
 
     def get_visual_layers(self):
@@ -4096,6 +4325,8 @@ def main():
                             controller.show_trip_paths = not controller.show_trip_paths
                             controller.status_message = (
                                 f"Trip paths: {'on' if controller.show_trip_paths else 'off'}")
+                        elif sim_clicked == "clock":
+                            controller.cycle_clock_speed()
                         elif sim_clicked == "slider":
                             controller.trips_at_once = sidebar.sim_panel.value_at(raw_screen_pos)
                     else:
@@ -4166,6 +4397,7 @@ def main():
             building_occupancy=controller.building_occupancy,
             grid_enabled=controller.placement.grid_enabled,
             grid_size=controller.placement.grid_size,
+            fps=clock.get_fps(),
         )
 
         sidebar.draw(sidebar_rect, controller.current_tool,
@@ -4183,7 +4415,8 @@ def main():
                       line_weight=ROAD_LINE_WEIGHT,
                       width_scale=road_style.ROAD_WIDTH_SCALE,
                       network=network,
-                      selected_node=controller.selected_node)
+                      selected_node=controller.selected_node,
+                      clock_speed=controller.clock_speed)
 
         # Modal confirmation dialog draws last, over everything.
         if controller.modal is not None:

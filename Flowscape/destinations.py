@@ -34,6 +34,7 @@ already leaves room for them (demand_multipliers is wired through here).
 """
 
 from dataclasses import dataclass
+import math
 import random
 
 # ----------------------------------------------------------------------
@@ -82,17 +83,28 @@ CATEGORY_HOURS = {
 }
 
 # ----------------------------------------------------------------------
-# Departure windows (24h decimal), shared by the default activity profiles.
-# Each generated trip gets a random time uniformly inside its activity's
-# window, so departures spread out instead of firing all at once. Phase 2
-# will further bias these by estimated travel time.
+# Desired-ARRIVAL windows (24h decimal), shared by the default activity
+# profiles. Phase 2 semantic change: a window is now when a traveller wants to
+# ARRIVE, not when they leave. Each trip draws a random desired arrival in its
+# window and the departure is back-computed (arrival - estimated travel +
+# jitter), so distant trips leave earlier and traffic spreads naturally.
 # ----------------------------------------------------------------------
-WORK_WINDOW = (7.0, 9.0)        # morning commute to work
-SCHOOL_WINDOW = (7.0, 8.5)      # morning drop-off / commute to school
-LUNCH_WINDOW = (11.5, 13.5)     # midday lunch run
-EVENING_WINDOW = (16.0, 18.5)   # evening return home
-SCHOOL_OUT_WINDOW = (14.0, 16.5)  # school lets out earlier
-LEISURE_WINDOW = (9.0, 20.0)    # errands / weekend trips spread broadly
+WORK_WINDOW = (7.0, 9.0)          # desired arrival at work (wide -> commute spreads)
+SCHOOL_WINDOW = (7.0, 8.5)        # desired arrival at school
+LUNCH_WINDOW = (11.5, 13.0)       # arrive for lunch
+EVENING_WINDOW = (16.5, 18.5)     # arrive home in the evening
+SCHOOL_OUT_WINDOW = (14.5, 16.0)  # school lets out earlier
+LEISURE_WINDOW = (9.0, 19.0)      # errands / weekend trips spread broadly
+
+# ----------------------------------------------------------------------
+# Travel-time estimate for departure scheduling (Phase 2). Deliberately NOT the
+# lane router: a straight-line distance over an average speed is enough to
+# stagger departures (distant trips leave earlier); it does not try to predict
+# the real drive time. `departure = desired_arrival - est_travel + jitter`.
+# ----------------------------------------------------------------------
+AVG_SPEED_FT_PER_HR = 30 * 5280.0   # ~30 mph in feet/hour
+MIN_TRAVEL_SIM_HR = 0.02            # floor (~1.2 min) so near trips still spread
+DEPART_OFFSET_SIM_HR = 0.12         # +/- ~7 min jitter, desyncs neighbours
 
 
 # ----------------------------------------------------------------------
@@ -314,15 +326,20 @@ DEFAULT_DEMAND_MULTIPLIERS = {c: 1.0 for c in CATEGORIES}
 @dataclass
 class Trip:
     """One generated trip: travel from one building's attached node to
-    another's, departing at a random time within the applicable window.
-    `depart_hour` is a 24h decimal time. Feed (origin_node_id, dest_node_id)
-    straight into TrafficSimulation.spawn_trip()."""
+    another's. `depart_hour` (24h decimal) is back-computed from `desired_arrival`
+    minus `est_travel` plus a small jitter, so distant trips leave earlier. Feed
+    (origin_node_id, dest_node_id) into the spawn pipeline. The extra fields
+    (activity / desired_arrival / est_travel) are carried for scheduling and
+    debugging and don't change the spawn call."""
     origin_node_id: int
     dest_node_id: int
     depart_hour: float
     origin_building_id: int
     dest_building_id: int
     period: str
+    activity: str = ""
+    desired_arrival: float = 0.0
+    est_travel: float = 0.0
 
 
 def _buildings_by_category(network):
@@ -350,6 +367,14 @@ def _rng(*parts):
     """A Random seeded from the given parts. random.Random rejects tuples, so
     parts are joined into a single stable string key."""
     return random.Random("|".join(str(p) for p in parts))
+
+
+def _estimate_travel_hours(origin, dest):
+    """Lightweight straight-line travel-time estimate (sim-hours) for departure
+    scheduling. NOT the lane router: it only needs to stagger departures so a
+    trip far from its destination leaves earlier, not predict real drive time."""
+    dist = math.hypot(origin.x - dest.x, origin.y - dest.y)
+    return max(MIN_TRAVEL_SIM_HR, dist / AVG_SPEED_FT_PER_HR)
 
 
 def building_vehicle_count(building, btype=None):
@@ -423,7 +448,7 @@ def generate_trips(network, day_index=0, weekend=False, limit=None,
             seed = _building_seed(origin)
             for ai, activity in enumerate(profile):
                 rng = _rng("trips", seed, day_index, ai)
-                lo, hi = activity.window
+                lo, hi = activity.window   # desired-ARRIVAL window
                 for _ in range(count):
                     choice = _pick_choice(activity.choices, rng)
                     if choice is None or choice.dest_category is STAY:
@@ -434,13 +459,22 @@ def generate_trips(network, day_index=0, weekend=False, limit=None,
                     dest = rng.choice(dests)
                     if dest is origin:
                         continue  # no zero-length self-trip
+                    # Back-compute departure from the desired arrival so distant
+                    # trips leave earlier; jitter desyncs neighbouring buildings.
+                    desired_arrival = rng.uniform(lo, hi)
+                    est_travel = _estimate_travel_hours(origin, dest)
+                    offset = rng.uniform(-DEPART_OFFSET_SIM_HR, DEPART_OFFSET_SIM_HR)
+                    depart_hour = min(24.0, max(0.0, desired_arrival - est_travel + offset))
                     trips.append(Trip(
                         origin_node_id=rng.choice(origin.connection_node_ids),
                         dest_node_id=rng.choice(dest.connection_node_ids),
-                        depart_hour=rng.uniform(lo, hi),
+                        depart_hour=depart_hour,
                         origin_building_id=origin.id,
                         dest_building_id=dest.id,
                         period=activity.period,
+                        activity=activity.name,
+                        desired_arrival=desired_arrival,
+                        est_travel=est_travel,
                     ))
 
     if limit is not None and len(trips) > limit:
