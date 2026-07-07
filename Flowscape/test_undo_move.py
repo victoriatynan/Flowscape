@@ -5,7 +5,9 @@ A mouse drag mutates objects every frame for smooth visual feedback, but must
 collapse into ONE undo step (Photoshop / level-editor behavior). These tests
 drive the InputController through realistic down/motion/up sequences and assert
 the undo history contains exactly one Move command per drag -- never one per
-motion frame -- and that undo/redo, no-op clicks, and Escape all behave.
+motion frame -- and that undo/redo, no-op clicks, and Escape all behave. Covers
+nodes, road curve control points, and building footprints (same pattern, all
+three share _begin_*_move/_commit_move/_cancel_move).
 """
 
 import os
@@ -41,6 +43,24 @@ def _drag_node(ctrl, node, path):
     for world_pos in path:
         ctrl._handle_mouse_motion(world_pos, (0, 0))
     ctrl._handle_mouse_up(_UpEvent(), path[-1] if path else start, (0, 0))
+
+
+def _building_grab_point(building):
+    """A point on the building's footprint that isn't also the entrance node
+    (add_building_with_driveway places the entrance AT the footprint center,
+    so a click dead-center would grab that node instead -- same node-before-
+    building priority real clicks near a building's edge don't run into)."""
+    return (building.x + 13, building.y)
+
+
+def _drag_building(ctrl, building, path):
+    """Same as _drag_node, but for a building footprint: grabs it from an
+    off-center point on its footprint (see _building_grab_point) and drags
+    through `path`."""
+    ctrl._select_tool_left_down(_building_grab_point(building))
+    for world_pos in path:
+        ctrl._handle_mouse_motion(world_pos, (0, 0))
+    ctrl._handle_mouse_up(_UpEvent(), path[-1] if path else _building_grab_point(building), (0, 0))
 
 
 def test_drag_creates_exactly_one_command():
@@ -128,6 +148,62 @@ def test_new_drag_clears_redo_branch():
     print("ok: a new drag clears the redo branch")
 
 
+def test_building_drag_creates_exactly_one_command():
+    ctrl, net, a, b = _make_controller()
+    building = net.add_building_with_driveway((0.0, -45.0), a.id, ctrl.active_building_type)
+
+    _drag_building(ctrl, building, [(5, -40), (15, -30), (30, -20)])
+
+    assert len(ctrl.undo_stack._undo) == 1, "one building drag must be one command"
+    assert (building.x, building.y) == (30, -20)
+    print("ok: building drag -> single command, final pos correct")
+
+
+def test_building_click_without_movement_selects_it():
+    ctrl, net, a, b = _make_controller()
+    building = net.add_building_with_driveway((0.0, -45.0), a.id, ctrl.active_building_type)
+    grab = _building_grab_point(building)
+
+    ctrl._select_tool_left_down(grab)
+    ctrl._handle_mouse_up(_UpEvent(), grab, (0, 0))
+
+    assert not ctrl.undo_stack.can_undo(), "a click must not create history"
+    assert ctrl.selected_building is building
+    assert (building.x, building.y) == (0.0, -45.0)
+    print("ok: zero-movement click on a building selects it, records nothing")
+
+
+def test_building_drag_undo_redo_round_trip():
+    ctrl, net, a, b = _make_controller()
+    building = net.add_building_with_driveway((0.0, -45.0), a.id, ctrl.active_building_type)
+    start = (building.x, building.y)
+
+    _drag_building(ctrl, building, [(10, -40), (25, -30)])
+    ctrl.undo()
+    assert (building.x, building.y) == start, "undo restores original position"
+
+    ctrl.redo()
+    assert (building.x, building.y) == (25, -30), "redo reapplies the full drag"
+    print("ok: building drag undo/redo round-trips")
+
+
+def test_escape_cancels_building_drag_and_reverts():
+    ctrl, net, a, b = _make_controller()
+    building = net.add_building_with_driveway((0.0, -45.0), a.id, ctrl.active_building_type)
+    start = (building.x, building.y)
+
+    ctrl._select_tool_left_down(_building_grab_point(building))
+    ctrl._handle_mouse_motion((40, -10), (0, 0))
+    assert (building.x, building.y) == (40, -10)
+
+    ctrl._cancel_move()
+    ctrl._handle_mouse_up(_UpEvent(), (40, -10), (0, 0))
+
+    assert (building.x, building.y) == start, "cancel reverts to original"
+    assert not ctrl.undo_stack.can_undo(), "cancel records nothing"
+    print("ok: Escape reverts a building drag and records no command")
+
+
 if __name__ == "__main__":
     pygame.init()
     test_drag_creates_exactly_one_command()
@@ -136,4 +212,8 @@ if __name__ == "__main__":
     test_escape_cancels_drag_and_reverts()
     test_control_point_drag_is_one_command()
     test_new_drag_clears_redo_branch()
+    test_building_drag_creates_exactly_one_command()
+    test_building_click_without_movement_selects_it()
+    test_building_drag_undo_redo_round_trip()
+    test_escape_cancels_building_drag_and_reverts()
     print("\ndrag-undo: all tests passed")

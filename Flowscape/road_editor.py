@@ -105,41 +105,57 @@ MAPS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maps")
 MAP_FILE_EXTENSION = ".json"
 
 
+_TK_SAVE_DIALOG_SCRIPT = """
+import sys, tkinter
+from tkinter import filedialog
+initial_dir, initial_name, extension = sys.argv[1], sys.argv[2], sys.argv[3]
+root = tkinter.Tk()
+root.withdraw()
+root.attributes("-topmost", True)
+try:
+    path = filedialog.asksaveasfilename(
+        parent=root,
+        title="Save Map As",
+        initialdir=initial_dir,
+        initialfile=initial_name + extension,
+        defaultextension=extension,
+        filetypes=[("Map files", "*" + extension), ("All files", "*.*")],
+    )
+finally:
+    root.destroy()
+print(path or "")
+"""
+
+
 def prompt_save_map_path(initial_dir=None, initial_name="untitled"):
     """Open the operating system's native Save File dialog for a map and
     return the chosen absolute path, or None if the user cancelled.
 
     The path is guaranteed to carry MAP_FILE_EXTENSION (added when the user
-    types a bare name). Uses tkinter's native dialog so no extra dependency
-    is needed; the Tk root is created hidden and destroyed immediately so it
-    never interferes with the pygame window. If tkinter is unavailable
-    (e.g. a headless build), falls back to a default path under MAPS_DIR so
-    saving degrades gracefully instead of crashing."""
+    types a bare name). The Tk dialog is run in a separate subprocess rather
+    than in-process: on macOS, pygame/SDL installs its own Cocoa
+    NSApplication subclass, and Tk's Cocoa color-handling code crashes with
+    an uncaught NSInvalidArgumentException if a Tk root is created in that
+    same process (Tk_GetColor calls a private -macOSVersion selector that
+    SDL's NSApplication subclass doesn't implement). Running Tk in its own
+    process sidesteps the shared-NSApplication conflict entirely. If
+    tkinter/the subprocess is unavailable (e.g. a headless build), falls
+    back to a default path under MAPS_DIR so saving degrades gracefully
+    instead of crashing."""
     if initial_dir is None:
         initial_dir = MAPS_DIR
     os.makedirs(initial_dir, exist_ok=True)
 
     try:
-        import tkinter
-        from tkinter import filedialog
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "-c", _TK_SAVE_DIALOG_SCRIPT,
+             initial_dir, initial_name, MAP_FILE_EXTENSION],
+            capture_output=True, text=True, timeout=300,
+        )
+        path = result.stdout.strip()
     except Exception:
         return os.path.join(initial_dir, initial_name + MAP_FILE_EXTENSION)
-
-    root = tkinter.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    try:
-        path = filedialog.asksaveasfilename(
-            parent=root,
-            title="Save Map As",
-            initialdir=initial_dir,
-            initialfile=initial_name + MAP_FILE_EXTENSION,
-            defaultextension=MAP_FILE_EXTENSION,
-            filetypes=[("Map files", "*" + MAP_FILE_EXTENSION),
-                       ("All files", "*.*")],
-        )
-    finally:
-        root.destroy()
 
     if not path:
         return None
@@ -3196,6 +3212,11 @@ class InputController:
         self.mousedown_node = None
         self.mousedown_pos = None
 
+        # Same click-vs-drag pattern as nodes, applied to buildings: drag the
+        # footprint to reposition it, plain click to select.
+        self.dragging_building = None
+        self.mousedown_building = None
+
         self.debug = False
         self.status_message = ""
         # Standard desktop save workflow: the file the map is currently bound
@@ -3261,6 +3282,8 @@ class InputController:
         self.dragging_control_point = False
         self.mousedown_node = None
         self.mousedown_pos = None
+        self.dragging_building = None
+        self.mousedown_building = None
         self.selected_road = None
         self.selected_node = None
         self.selected_building = None
@@ -3372,12 +3395,16 @@ class InputController:
             if self.dragging_node is None and self.mousedown_node is not None:
                 # Released without crossing the drag threshold -> a click.
                 self._handle_node_click(self.mousedown_node)
+            if self.dragging_building is None and self.mousedown_building is not None:
+                self._handle_building_click(self.mousedown_building)
             # Collapse the whole drag into a single undo step (no-op for a
             # click, since nothing moved).
             self._commit_move()
             self.dragging_node = None
             self.dragging_control_point = False
             self.mousedown_node = None
+            self.dragging_building = None
+            self.mousedown_building = None
             self.mousedown_pos = None
         elif event.button == 3:
             self.panning = False
@@ -3398,6 +3425,8 @@ class InputController:
             self.dragging_node.x, self.dragging_node.y = world_pos
         elif self.dragging_control_point and self.selected_road is not None:
             self.network.set_curve_offset_from_control_point(self.selected_road, world_pos)
+        elif self.dragging_building is not None:
+            self.dragging_building.x, self.dragging_building.y = world_pos
         elif self.mousedown_node is not None:
             dx = world_pos[0] - self.mousedown_pos[0]
             dy = world_pos[1] - self.mousedown_pos[1]
@@ -3406,6 +3435,14 @@ class InputController:
                 self.dragging_node = self.mousedown_node
                 self.mousedown_node = None
                 self.dragging_node.x, self.dragging_node.y = world_pos
+        elif self.mousedown_building is not None:
+            dx = world_pos[0] - self.mousedown_pos[0]
+            dy = world_pos[1] - self.mousedown_pos[1]
+            threshold = NODE_DRAG_THRESHOLD / self.camera.zoom
+            if (dx * dx + dy * dy) ** 0.5 > threshold:
+                self.dragging_building = self.mousedown_building
+                self.mousedown_building = None
+                self.dragging_building.x, self.dragging_building.y = world_pos
         else:
             hit_radius = NODE_HIT_RADIUS / self.camera.zoom
             self.hovered_node = self.network.node_at(*world_pos, radius=hit_radius)
@@ -3441,6 +3478,9 @@ class InputController:
     def _set_curve_offset(self, road, state):
         road.curve_offset = state
 
+    def _set_building_pos(self, building, state):
+        building.x, building.y = state
+
     def _begin_node_move(self, node):
         """Open a move transaction for a node about to be grabbed, snapshotting
         its start position. The live drag mutates node.x/node.y directly; only
@@ -3456,6 +3496,14 @@ class InputController:
         txn = MoveTransaction()
         txn.add(lambda r=road: r.curve_offset,
                 lambda s, r=road: self._set_curve_offset(r, s))
+        self.move_txn = txn
+
+    def _begin_building_move(self, building):
+        """Open a move transaction for a building about to be grabbed,
+        snapshotting its start position (same pattern as node move)."""
+        txn = MoveTransaction()
+        txn.add(lambda b=building: (b.x, b.y),
+                lambda s, b=building: self._set_building_pos(b, s))
         self.move_txn = txn
 
     def _commit_move(self):
@@ -3479,6 +3527,8 @@ class InputController:
         self.dragging_node = None
         self.dragging_control_point = False
         self.mousedown_node = None
+        self.dragging_building = None
+        self.mousedown_building = None
         self.mousedown_pos = None
 
     def undo(self):
@@ -3524,7 +3574,11 @@ class InputController:
 
         building = self.network.building_at(*world_pos)
         if building is not None:
-            self.selected_building = building
+            # Same click-vs-drag pattern as nodes: open the move transaction
+            # now, resolve click vs. drag on motion/release.
+            self._begin_building_move(building)
+            self.mousedown_building = building
+            self.mousedown_pos = world_pos
             self.selected_road = None
             self.selected_node = None
             return
@@ -3544,6 +3598,17 @@ class InputController:
             self.selected_node = node
             self.selected_road = None
             self.selected_building = None
+
+    def _handle_building_click(self, building):
+        """A plain click (no drag) on an existing building, in TOOL_SELECT: select it."""
+        if self.current_tool != TOOL_SELECT:
+            return
+        if self.selected_building is not None and self.selected_building.id == building.id:
+            self.selected_building = None
+        else:
+            self.selected_building = building
+            self.selected_road = None
+            self.selected_node = None
 
     # ------------------------------------------------------------------
     # Intersection control (applied from the Inspector)
@@ -3637,6 +3702,9 @@ class InputController:
         self.mousedown_node = None
         self.dragging_node = None
         self.dragging_control_point = False
+        self.mousedown_building = None
+        self.dragging_building = None
+        self.move_txn = None
 
     # ------------------------------------------------------------------
     # Save / load
@@ -3694,6 +3762,8 @@ class InputController:
         self.dragging_control_point = False
         self.mousedown_node = None
         self.mousedown_pos = None
+        self.dragging_building = None
+        self.mousedown_building = None
         self.hovered_node = None
         self.selected_road = None
         self.selected_node = None
