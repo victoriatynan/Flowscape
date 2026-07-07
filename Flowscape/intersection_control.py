@@ -27,9 +27,9 @@ Controller hierarchy
   IntersectionController            -- base interface + occupancy. Always grants.
     ReservationController           -- exclusive access to CONFLICTING movements.
                                        The reusable base for all real control:
-      (future) StopSignController   -- wait-your-turn, then super().can_enter()
-      (future) TrafficLightController -- phase is green, then super().can_enter()
-      (future) YieldController      -- no priority traffic, then super().can_enter()
+      StopSignController            -- wait-your-turn, then super().can_enter()
+      TrafficLightController        -- phase is green, then super().can_enter()
+      YieldController                -- no priority traffic, then super().can_enter()
       (future) RoundaboutController -- refine movements_conflict(), reuse the rest
 
 Future types add their distinguishing policy ON TOP of super().can_enter() and
@@ -47,6 +47,8 @@ lane_graph, the single source of truth for what counts as LEFT/RIGHT/STRAIGHT/
 UTURN; importing those constants is a one-way leaf->leaf dependency, no cycle.)
 """
 
+import math
+import os
 from dataclasses import dataclass
 
 from lane_graph import (TURN_STRAIGHT, TURN_LEFT, TURN_RIGHT, TURN_UTURN,
@@ -54,12 +56,12 @@ from lane_graph import (TURN_STRAIGHT, TURN_LEFT, TURN_RIGHT, TURN_UTURN,
 
 CONTROL_UNCONTROLLED = "uncontrolled"
 CONTROL_RESERVATION = "reservation"
+CONTROL_TRAFFIC_LIGHT = "traffic_light"
+CONTROL_YIELD = "yield"
 # Future control kinds: listed in the editor's control-type selector as disabled
 # placeholders, but deliberately NOT registered in CONTROLLER_TYPES yet (no
 # concrete controller class), so they can't be instantiated. Adding a controller
 # class + a CONTROLLER_TYPES entry is all that's needed to enable one.
-CONTROL_TRAFFIC_LIGHT = "traffic_light"
-CONTROL_YIELD = "yield"
 CONTROL_ROUNDABOUT = "roundabout"
 
 # Default control for a junction node when its data doesn't say otherwise.
@@ -589,14 +591,238 @@ class YieldController(ReservationController):
                 self._priority_movements.append(m)
 
 
+# ----------------------------------------------------------------------
+# Traffic light: axis-based 2-phase signal -- a POLICY layer on top of the
+# reservation CONCURRENCY layer, same shape as stop signs and yields.
+# ----------------------------------------------------------------------
+
+TL_GREEN = "green"
+TL_YELLOW = "yellow"
+TL_ALL_RED = "all_red"
+
+TL_STATE_COLORS = {
+    TL_GREEN: (90, 230, 120),
+    TL_YELLOW: (240, 200, 60),
+    TL_ALL_RED: (220, 70, 70),
+}
+
+# Per-approach signal-head lamp placement: just beyond the junction disc, back
+# along each road's own direction, roughly where a stopped car's hood would be.
+SIGNAL_HEAD_OFFSET_FT = 15.0
+SIGNAL_HEAD_RADIUS_FT = 5.0
+
+# Placeholder signal-head art (tools/make_placeholder_traffic_light_icons.py),
+# in the same "2d Assets" folder as the vehicle sprite -- a world-space sprite
+# that rotates to face each approach, unlike the stop sign's fixed UI icon.
+# Drop finished art at the same filenames to replace these with no code
+# change. Missing files fall back to the plain colored lamp circle.
+_TL_ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "2d Assets")
+TL_ICON_PATHS = {
+    TL_GREEN: os.path.join(_TL_ASSET_DIR, "trafficlight-green.png"),
+    TL_YELLOW: os.path.join(_TL_ASSET_DIR, "trafficlight-yellow.png"),
+    TL_ALL_RED: os.path.join(_TL_ASSET_DIR, "trafficlight-red.png"),
+}
+TL_ICON_HEIGHT_FT = 6.0
+
+
+def _tl_icon_path(state):
+    path = TL_ICON_PATHS.get(state)
+    return path if path is not None and os.path.exists(path) else None
+
+
+class TrafficLightController(ReservationController):
+    """Signalized junction. It decides WHEN a movement may be attempted (is
+    its approach's phase green right now?) and delegates conflict exclusion to
+    the reservation lifecycle -- exactly like stop signs and yields, a wrong
+    phase assignment can only make traffic wait longer, never cause a crash.
+
+    Phases group the node's roads by approach bearing (opposite roads share a
+    phase; see _axis_phase_groups), giving a simple 2-phase axis light for the
+    common 4-way/T junction: e.g. N-S green, then E-W green. Left turns are
+    permissive: they move on green, and movements_conflict() (refined with
+    real turn-type geometry -- see below) makes them yield to the opposing
+    through movement, while opposing STRAIGHT traffic and opposing turns flow
+    concurrently. Protected-turn phases and non-axis geometries are a future
+    refinement.
+
+    One phase runs green_duration, then yellow_duration (no NEW entries --
+    treated as a brief all-stop before the swap, the simplest safe choice),
+    then all_red_duration (both axes stopped, clearing the junction) before
+    the next phase's green. cycle_length is informational (nominally
+    phase_count * (green+yellow+all_red)); phase advancement is driven
+    directly by the per-state durations, not by cycle_length.
+    """
+
+    kind = CONTROL_TRAFFIC_LIGHT
+
+    def __init__(self, node_id, network, cycle_length=60.0, green_duration=25.0,
+                 yellow_duration=3.0, all_red_duration=2.0, initial_phase=0):
+        super().__init__(node_id)
+        self.cycle_length = cycle_length
+        self.green_duration = green_duration
+        self.yellow_duration = yellow_duration
+        self.all_red_duration = all_red_duration
+        self.initial_phase = initial_phase
+        self._phase_groups, self._road_phase = self._axis_phase_groups(network)
+        # Resolved on the first begin_step(), so a node-data override of
+        # initial_phase -- applied by make_controller AFTER construction -- is
+        # picked up before the phase clock starts.
+        self._phase = None
+        self._state = TL_GREEN
+        self._state_timer = 0.0
+
+    # --- phase geometry (override point: refine for non-axis junctions) -----
+    def _axis_phase_groups(self, network):
+        """Group this node's roads into 2 phases by approach bearing: sort
+        roads by outward-tangent angle and alternate them. For a roughly
+        evenly-spaced junction (4-way or T), alternating indices in angle
+        order puts OPPOSITE approaches in the same phase (axis-based N-S vs
+        E-W) -- the same angle-order trick the junction-polygon renderer uses
+        (road_editor.py's _merge_junction_polygon). Returns
+        ([set(road_id), set(road_id)], {road_id: phase_index})."""
+        roads = network.roads_for_node(self.node_id)
+        bearings = []
+        for road in roads:
+            tangent = network.outward_tangent_at_node(road, self.node_id)
+            bearings.append((math.atan2(tangent[1], tangent[0]), road))
+        bearings.sort(key=lambda pair: pair[0])
+        groups = [set(), set()]
+        road_phase = {}
+        for i, (_angle, road) in enumerate(bearings):
+            phase = i % 2
+            groups[phase].add(road.id)
+            road_phase[road.id] = phase
+        return groups, road_phase
+
+    # --- conflict model (TL-c: permissive lefts, real same-axis geometry) ---
+    def movements_conflict(self, m1, m2):
+        """Refine the base's conservative lane-pair-only conflict model with
+        real turn-type geometry -- the exact override point its docstring
+        names. Only ever asked about movements _is_green() already let
+        through, so ordinarily both are on the SAME (currently green) axis;
+        the cross-axis branch below only fires for a leftover reservation
+        still clearing from the previous phase, and stays conservative.
+
+          - SAME lane pair: never conflicts (base rule, unchanged -- a platoon).
+          - DIFFERENT axis (only a stale prior-phase reservation can cause
+            this): conflicts -- safe default, matches the base exactly.
+          - SAME incoming road, same axis (lanes fanning out of one
+            approach -- e.g. straight + left from the same road): no
+            conflict, lane discipline already keeps them apart.
+          - DIFFERENT (opposing) approaches, same axis:
+              straight vs straight   -> no conflict (pass side by side)
+              straight vs left/uturn -> conflict (permissive left YIELDS to
+                                        the opposing through movement)
+              turn vs turn           -> no conflict (opposing turns curve
+                                        away from each other)
+        """
+        if m1.lane_pair == m2.lane_pair:
+            return False
+        if self._road_phase.get(m1.incoming[0]) != self._road_phase.get(m2.incoming[0]):
+            return True
+        if m1.incoming[0] == m2.incoming[0]:
+            return False
+        if m1.turn_type == TURN_STRAIGHT and m2.turn_type == TURN_STRAIGHT:
+            return False
+        if TURN_STRAIGHT in (m1.turn_type, m2.turn_type):
+            return True
+        return False
+
+    # --- policy: is THIS vehicle's movement green right now? ----------------
+    def _is_green(self, vehicle):
+        if self._state != TL_GREEN:
+            return False
+        movement = self._movement(vehicle)
+        if movement is None:
+            return True                 # indeterminate -> don't block
+        return self._road_phase.get(movement.incoming[0]) == self._phase
+
+    # --- policy gates: phase precondition, THEN the unchanged reservation ---
+    def would_permit(self, vehicle):
+        return self._is_green(vehicle) and super().would_permit(vehicle)
+
+    def can_enter(self, vehicle):
+        # Not green -> held at the line (like a stop sign, not a base waiter;
+        # the phase clock -- not a conflicting reservation -- is why it waits).
+        if not self._is_green(vehicle):
+            return False
+        return super().can_enter(vehicle)
+
+    # --- policy: advance the phase clock -------------------------------------
+    def begin_step(self, vehicles, dt):
+        super().begin_step(vehicles, dt)
+        if self._phase is None:
+            self._phase = int(self.initial_phase) % len(self._phase_groups)
+        self._state_timer += dt
+        duration = {TL_GREEN: self.green_duration,
+                    TL_YELLOW: self.yellow_duration,
+                    TL_ALL_RED: self.all_red_duration}[self._state]
+        if self._state_timer < duration:
+            return
+        self._state_timer -= duration
+        if self._state == TL_GREEN:
+            self._state = TL_YELLOW
+        elif self._state == TL_YELLOW:
+            self._state = TL_ALL_RED
+        else:
+            self._state = TL_GREEN
+            self._phase = (self._phase + 1) % len(self._phase_groups)
+
+    # --- debug visualization (extends the base's owners/waiters/transitions) -
+    # DYNAMIC, unlike a stop sign's static icon: the lamp colors change every
+    # frame with the phase clock, so this must never be static-cached (see
+    # RoadRenderer's _static_signature -- it excludes controller runtime state
+    # for exactly this reason).
+    def visual_layers(self, network):
+        layers = super().visual_layers(network)
+        if self._phase is None:
+            return layers
+        node = network.nodes.get(self.node_id)
+        if node is None:
+            return layers
+        radius = junction_radius(network, self.node_id)
+        color = TL_STATE_COLORS[self._state]
+        layers.append({"shape": "text",
+                       "pos": (node.x, node.y - radius - 12.0),
+                       "text": f"{self._state.upper()} phase {self._phase}",
+                       "color": color})
+
+        # One signal-head lamp per approach, its state driven by whether ITS
+        # phase is active right now: this controller's own state (green/
+        # yellow/all-red) while it's this axis's turn, always all-red
+        # otherwise (the other axis is never moving while it isn't its turn).
+        for road in network.roads_for_node(self.node_id):
+            phase = self._road_phase.get(road.id)
+            if phase is None:
+                continue
+            lamp_state = self._state if phase == self._phase else TL_ALL_RED
+            tangent = network.outward_tangent_at_node(road, self.node_id)
+            lamp_pos = (node.x + tangent[0] * (radius + SIGNAL_HEAD_OFFSET_FT),
+                       node.y + tangent[1] * (radius + SIGNAL_HEAD_OFFSET_FT))
+            icon = _tl_icon_path(lamp_state)
+            if icon is not None:
+                # Face oncoming traffic: -tangent points from the lamp back
+                # toward the junction, the direction an approaching driver
+                # looks along.
+                layers.append({"shape": "sprite", "pos": lamp_pos,
+                               "heading": (-tangent[0], -tangent[1]),
+                               "length_ft": TL_ICON_HEIGHT_FT, "image": icon})
+            else:
+                layers.append({"shape": "circle", "pos": lamp_pos,
+                               "radius": SIGNAL_HEAD_RADIUS_FT,
+                               "color": TL_STATE_COLORS[lamp_state], "alpha": 230})
+        return layers
+
+
 # Registry: control kind -> controller class. Future types add an entry here
-# (e.g. CONTROLLER_TYPES["traffic_light"] = TrafficLightController); movement is
+# (e.g. CONTROLLER_TYPES["roundabout"] = RoundaboutController); movement is
 # unaffected.
 CONTROLLER_TYPES = {
     CONTROL_UNCONTROLLED: IntersectionController,
     CONTROL_RESERVATION: ReservationController,
     CONTROL_STOP_SIGN: StopSignController,
     CONTROL_YIELD: YieldController,
+    CONTROL_TRAFFIC_LIGHT: TrafficLightController,
 }
 
 
@@ -675,7 +901,12 @@ def make_controller(network, node_id):
     data = network.nodes[node_id].data or {}
     kind = data.get("control", DEFAULT_INTERSECTION_CONTROL)
     cls = CONTROLLER_TYPES.get(kind, ReservationController)
-    controller = cls(node_id)
+    # TrafficLightController is the only type that needs junction geometry (to
+    # group approaches into axis-based phases), so it alone takes `network`.
+    if kind == CONTROL_TRAFFIC_LIGHT:
+        controller = cls(node_id, network)
+    else:
+        controller = cls(node_id)
     for field in control_settings_schema(kind):
         value = data.get(field.key)
         if value is not None and hasattr(controller, field.key):

@@ -122,7 +122,9 @@ def test_inspector_reports_control_and_setting_actions():
 
 
 def test_dropdown_skips_disabled_future_types():
-    # Disabled (future) types are present but not selectable.
+    # Disabled (future) types are present but not selectable. Roundabout is
+    # the one kind still genuinely unimplemented (traffic_light graduated to a
+    # real controller -- see test_traffic_light.py).
     options = [(k, k, k in CONTROL_TYPE_IMPLEMENTED) for k in CONTROL_TYPE_ORDER]
     dd = Dropdown(options, "reservation")
     dd.is_open = True
@@ -130,8 +132,8 @@ def test_dropdown_skips_disabled_future_types():
     dd._box = pygame.Rect(0, 0, 160, 24)
     dd.draw_popup(surface, _font())
 
-    tl_rect = next(r for v, r, en in dd._item_rects if v == "traffic_light")
-    assert dd.handle_click(tl_rect.center) == ("consumed", None)  # disabled -> ignored
+    rb_rect = next(r for v, r, en in dd._item_rects if v == "roundabout")
+    assert dd.handle_click(rb_rect.center) == ("consumed", None)  # disabled -> ignored
     assert dd.value == "reservation" and dd.is_open                # unchanged, stays open
     ss_rect = next(r for v, r, en in dd._item_rects if v == "stop_sign")
     assert dd.handle_click(ss_rect.center) == ("select", "stop_sign")
