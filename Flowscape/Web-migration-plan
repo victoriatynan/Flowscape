@@ -1,0 +1,420 @@
+# Web Migration Plan
+
+## Overview
+
+This document outlines the long-term plan for migrating FlowScape from a desktop Pygame application to a browser-based application while preserving the existing simulation engine.
+
+The objective is **not** to rewrite the simulator. Instead, the existing Python simulation will become a headless backend, and a modern web frontend will replace the current Pygame interface.
+
+The backend will remain the single source of truth for all simulation state, while the browser will be responsible only for rendering, user interaction, and editor controls.
+
+This migration is intended to be incremental, allowing existing functionality and deterministic testing to remain intact throughout the process.
+
+---
+
+# Goals
+
+* Preserve all existing simulation logic.
+* Do not port the simulation to JavaScript.
+* Keep deterministic simulation behavior.
+* Maintain compatibility with existing save files.
+* Preserve the current architectural layering.
+* Replace only the presentation layer.
+* Continue supporting automated headless testing.
+* Improve maintainability by separating UI from simulation.
+
+---
+
+# Existing Architecture
+
+```
+App / Entry
+      │
+Editor / UI
+      │
+Demand & Scheduling
+      │
+Simulation
+      │
+Lane Graph
+      │
+Geometry / Style
+      │
+Data
+```
+
+Everything below the Editor/UI layer is already Pygame-free and can execute headlessly.
+
+This existing separation makes the project well suited for a client-server architecture.
+
+---
+
+# Target Architecture
+
+```
+                Browser
+
+        HTML / CSS / JavaScript
+                 │
+      Canvas / WebGL Rendering
+                 │
+     REST API + WebSocket Connection
+                 │
+──────────────────────────────────────────
+             Python Backend
+──────────────────────────────────────────
+
+      Editor / Simulation API
+                 │
+      Demand & Scheduling
+                 │
+        Vehicle Simulation
+                 │
+          Lane Graph
+                 │
+       Geometry / Style
+                 │
+               Data
+```
+
+The browser becomes another client of the simulation rather than containing simulation logic itself.
+
+---
+
+# Guiding Principles
+
+## Single Source of Truth
+
+The backend owns all simulation state.
+
+The frontend should never duplicate or independently calculate simulation behavior.
+
+Examples include:
+
+* vehicle movement
+* routing
+* demand generation
+* traffic lights
+* scheduling
+* lane changes
+* building state
+
+The frontend only visualizes this information.
+
+---
+
+## Preserve Existing Layering
+
+Current layering should remain intact.
+
+```
+Browser
+
+↓
+
+API
+
+↓
+
+Simulation
+
+↓
+
+Lane Graph
+
+↓
+
+Geometry
+
+↓
+
+Data
+```
+
+No frontend code should directly manipulate simulation internals.
+
+---
+
+## Deterministic Simulation
+
+Existing deterministic behavior must remain unchanged.
+
+Identical maps and seeds should continue producing identical simulations.
+
+This ensures:
+
+* reproducible bugs
+* reliable testing
+* deterministic save files
+
+---
+
+# Backend Responsibilities
+
+The backend will become the simulation server.
+
+Responsibilities include:
+
+* maintaining the RoadNetwork
+* executing simulation ticks
+* routing vehicles
+* generating traffic demand
+* processing lane changes
+* managing traffic lights
+* loading maps
+* saving maps
+* validating editor operations
+* maintaining undo history
+* broadcasting simulation state
+
+The backend remains responsible for every authoritative simulation decision.
+
+---
+
+# Frontend Responsibilities
+
+The frontend will become a rendering and editing client.
+
+Responsibilities include:
+
+* drawing roads
+* drawing buildings
+* drawing vehicles
+* camera movement
+* selection
+* toolbars
+* inspector panels
+* property editing
+* sending editing commands
+* interpolating between simulation snapshots for smooth rendering
+
+The frontend should never perform simulation calculations.
+
+---
+
+# Communication Strategy
+
+Two communication methods will be used.
+
+## REST API
+
+REST endpoints are appropriate for discrete user actions.
+
+Examples include:
+
+* create road
+* delete road
+* place building
+* move node
+* undo
+* redo
+* load map
+* save map
+* start simulation
+* pause simulation
+* stop simulation
+
+These are request/response operations.
+
+---
+
+## WebSockets
+
+WebSockets are appropriate for continuously changing information.
+
+Examples include:
+
+* vehicle positions
+* simulation clock
+* traffic lights
+* performance statistics
+* simulation status
+* selected object updates
+
+A persistent connection avoids repeatedly polling the backend.
+
+---
+
+# Rendering Strategy
+
+Static map geometry should only be transmitted when necessary.
+
+Examples include:
+
+* roads
+* buildings
+* intersections
+* lane geometry
+* palettes
+
+Dynamic simulation data should be streamed continuously.
+
+Examples include:
+
+* vehicle positions
+* vehicle rotation
+* vehicle speed
+* traffic light states
+* simulation clock
+
+The frontend combines the static map with dynamic updates to render each frame.
+
+---
+
+# Suggested Technology
+
+## Backend
+
+* Python
+* FastAPI
+* WebSockets
+* Uvicorn
+
+## Frontend
+
+* React
+* TypeScript
+* HTML5 Canvas
+
+Potential future upgrade:
+
+* PixiJS or WebGL renderer for improved performance.
+
+---
+
+# Migration Phases
+
+## Phase 1 — Complete Existing Refactor
+
+Before introducing any web technologies, complete the existing refactor plan.
+
+Priority:
+
+* extract RoadNetwork
+* extract geometry helpers
+* extract renderer
+* extract controller
+* extract camera
+* extract remaining UI panels
+
+This removes the primary architectural bottleneck before introducing a second UI.
+
+---
+
+## Phase 2 — Headless Backend
+
+Separate the simulation loop completely from Pygame.
+
+The simulation should be executable without creating a window.
+
+Expected result:
+
+```
+Simulation
+
+↓
+
+Update
+
+↓
+
+State
+```
+
+No rendering required.
+
+---
+
+## Phase 3 — Introduce FastAPI
+
+Wrap the simulation with a web server.
+
+Create API endpoints for:
+
+* editing
+* simulation control
+* loading
+* saving
+* inspector access
+
+No frontend changes are required at this stage.
+
+---
+
+## Phase 4 — Browser Renderer
+
+Build an initial browser client.
+
+Initially support:
+
+* map rendering
+* vehicle rendering
+* camera movement
+
+The Pygame editor continues to function during this phase.
+
+---
+
+## Phase 5 — Browser Editor
+
+Gradually replace editor functionality.
+
+Examples:
+
+* selection
+* node editing
+* road drawing
+* building placement
+* inspector
+* toolbar
+
+Pygame remains available until feature parity is achieved.
+
+---
+
+## Phase 6 — Complete Migration
+
+After all editor functionality has been migrated:
+
+* remove Pygame rendering
+* remove Pygame event handling
+* retain the simulation engine
+
+The simulator now runs entirely through the browser.
+
+---
+
+# Testing Strategy
+
+Existing deterministic tests remain the primary verification mechanism.
+
+Every migration step should preserve:
+
+* deterministic generation
+* save compatibility
+* routing behavior
+* scheduling
+* lane changes
+* traffic lights
+* undo history
+
+New API endpoints should receive automated tests where appropriate.
+
+The simulation should remain executable headlessly throughout the migration.
+
+---
+
+# Long-Term Benefits
+
+Completing this migration provides several advantages:
+
+* Modern browser-based interface
+* Platform-independent deployment
+* Cleaner separation between simulation and presentation
+* Easier future UI development
+* Potential for collaborative editing
+* Easier remote hosting
+* Simpler integration with external tools
+* Greater maintainability through stronger architectural boundaries
+
+The simulation engine remains unchanged while the user experience becomes significantly more flexible and maintainable.

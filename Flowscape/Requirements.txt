@@ -1,0 +1,7 @@
+# Current dependency
+pygame>=2.5.2
+
+# Uncomment when beginning the web backend migration
+# fastapi>=0.116
+# uvicorn[standard]>=0.35
+# pydantic>=2.11
