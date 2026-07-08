@@ -9,3 +9,12 @@ __pycache__/
 
 # Affinity editor lock files (transient, created while a .af file is open)
 *.af~lock~
+
+# Generated visual-test renders (recreated by the test_*_visual.py scripts)
+Flowscape/test_output/
+
+# Local archive of retired files (kept out of the repo)
+archive/
+
+# Per-machine Claude Code settings
+.claude/settings.local.json

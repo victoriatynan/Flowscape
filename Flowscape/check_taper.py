@@ -24,6 +24,7 @@ from road_style import get_road_profile
 from check_fillet_direction import _polyline_self_intersects
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_output")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 def _net(segments):

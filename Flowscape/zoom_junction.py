@@ -14,6 +14,7 @@ from test_intersections_visual import SCENARIOS, _spoke_network
 from check_fillet_direction import EXTRA
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_output")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 ALL = dict(list(SCENARIOS) + list(EXTRA))
 
 
