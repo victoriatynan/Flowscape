@@ -1,5 +1,8 @@
 .DS_Store
 
+# Python virtual environment (machine-specific, never committed)
+venv/
+
 # Python bytecode caches (auto-generated, machine/version specific)
 __pycache__/
 *.pyc
