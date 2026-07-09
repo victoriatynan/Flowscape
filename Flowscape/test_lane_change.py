@@ -9,13 +9,7 @@ TrafficSimulation on the 2+2 arterial test map, plus a few pure-policy/geometry
 unit checks.
 """
 
-import os
-
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
 import math
-import pygame
 
 from traffic_sim import (TrafficSimulation, create_lane_test_map, STATE_BLOCKED,
                          lane_polyline, lane_arrival_node, _point_at_arc,
@@ -185,7 +179,6 @@ def test_merge_polyline_is_smooth_and_lands_on_new_lane():
 
 
 if __name__ == "__main__":
-    pygame.init()
     test_held_up_car_merges_to_emptier_lane()
     test_no_change_without_a_leader()
     test_unreachable_adjacent_lane_is_skipped()

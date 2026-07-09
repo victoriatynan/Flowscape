@@ -1,111 +1,42 @@
 """Diagnostic: width-transition (taper) surfaces at 2-road continuation
 nodes joining roads of different widths.
 
-Checks, for every taper drawn:
+Checks, for every taper the assembly pass builds:
 1. NO LOOP: neither S-curve edge polyline self-intersects, and the two
    edges never cross each other.
 2. FULL WIDTH: the wider road's mouth chord is its full profile width
    (the wide road never necks down before the node).
 
-Renders each scenario to test_output/taper_<name>.png for eyeballing.
+Pure geometry -- no rendering (re-based from the pygame renderer per
+WEB_MIGRATION_PLAN.md Phase 6; the taper capture now hooks
+build_node_surfaces' taper_builder instead of monkey-patching the
+renderer). Known pre-existing violations are reported, not asserted.
+
+Run:  python check_taper.py    (exit 1 if any violations)
 """
 
 import math
-import os
 
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-
-import pygame
-
-import road_editor
-from road_editor import (RoadNetwork, Camera, RoadRenderer,
-                          CANVAS_WIDTH, CANVAS_HEIGHT)
-from road_style import get_road_profile
 from check_fillet_direction import _polyline_self_intersects
-
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_output")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-
-def _net(segments):
-    """segments: [((x1,y1),(x2,y2), preset, curve_offset), ...] sharing
-    coincident endpoints via position lookup."""
-    net = RoadNetwork()
-    nodes = {}
-
-    def node_at(p):
-        if p not in nodes:
-            nodes[p] = net.add_node(*p)
-        return nodes[p]
-
-    for p1, p2, preset, offset in segments:
-        road = net.add_road(node_at(p1).id, node_at(p2).id, curve_offset=offset)
-        road.data["profile"] = {"preset": preset}
-    return net
-
-
-SCENARIOS = [
-    ("straight", lambda: _net([
-        ((-220.0, 0.0), (0.0, 0.0), "highway", (0.0, 0.0)),
-        ((0.0, 0.0), (220.0, 0.0), "residential", (0.0, 0.0)),
-    ])),
-    ("bent", lambda: _net([
-        ((-220.0, 0.0), (0.0, 0.0), "highway", (0.0, 0.0)),
-        ((0.0, 0.0), (170.0, 130.0), "residential", (0.0, 0.0)),
-    ])),
-    ("curved", lambda: _net([
-        ((-220.0, 0.0), (0.0, 0.0), "expressway", (0.0, 40.0)),
-        ((0.0, 0.0), (220.0, 0.0), "urban", (0.0, -40.0)),
-    ])),
-    ("narrow_between", lambda: _net([
-        ((-260.0, 0.0), (-60.0, 0.0), "highway", (0.0, 0.0)),
-        ((-60.0, 0.0), (60.0, 0.0), "residential", (0.0, 0.0)),
-        ((60.0, 0.0), (260.0, 0.0), "expressway", (0.0, 0.0)),
-    ])),
-    ("hairpin", lambda: _net([
-        ((-220.0, 0.0), (0.0, 0.0), "highway", (0.0, 0.0)),
-        ((0.0, 0.0), (-200.0, 70.0), "residential", (0.0, 0.0)),
-    ])),
-    ("bend_90", lambda: _net([
-        ((-220.0, 0.0), (0.0, 0.0), "highway", (0.0, 0.0)),
-        ((0.0, 0.0), (10.0, 200.0), "residential", (0.0, 0.0)),
-    ])),
-]
+from junction_scenarios import TAPER_SCENARIOS
+from road_geometry import (build_node_surfaces, _build_taper_polygon,
+                           _taper_curve, _segment_intersection)
+from road_style import get_road_profile
 
 
 def main():
-    pygame.init()
-    pygame.display.set_mode((CANVAS_WIDTH, CANVAS_HEIGHT))
-    font = pygame.font.SysFont("monospace", 13)
-    surface = pygame.Surface((CANVAS_WIDTH, CANVAS_HEIGHT))
-
     total = 0
     all_violations = []
-    for name, builder in SCENARIOS:
+    for name, builder in TAPER_SCENARIOS:
         net = builder()
+
         captured = []
-        orig = road_editor._build_taper_polygon
 
         def capture(entries, _captured=captured):
             _captured.append(entries)
-            return orig(entries)
+            return _build_taper_polygon(entries)
 
-        road_editor._build_taper_polygon = capture
-        try:
-            camera = Camera()
-            camera.zoom = 2.0
-            xs = [n.x for n in net.nodes.values()]
-            ys = [n.y for n in net.nodes.values()]
-            cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
-            s = camera._scale()
-            camera.offset_x = cx - (CANVAS_WIDTH / 2.0) / s
-            camera.offset_y = cy - (CANVAS_HEIGHT / 2.0) / s
-            renderer = RoadRenderer(surface, font, camera)
-            renderer.draw(net, None, None, None, False, None, None, None, None,
-                           "select_tool", debug=False)
-            pygame.image.save(surface, os.path.join(OUTPUT_DIR, f"taper_{name}.png"))
-        finally:
-            road_editor._build_taper_polygon = orig
+        build_node_surfaces(net, taper_builder=capture)
 
         violations = []
         for entries in captured:
@@ -113,8 +44,8 @@ def main():
             a, b = entries
             edges = []
             for p, q in ((a, b), (b, a)):
-                curve = road_editor._taper_curve(p["left"], p["outward"],
-                                                  q["right"], q["outward"], samples=24)
+                curve = _taper_curve(p["left"], p["outward"],
+                                     q["right"], q["outward"], samples=24)
                 edges.append([p["left"]] + curve + [q["right"]])
             for side, edge in zip(("left", "right"), edges):
                 hit = _polyline_self_intersects(edge)
@@ -123,7 +54,7 @@ def main():
                                       f"near ({hit[0]:.1f}, {hit[1]:.1f})")
             for s1 in range(len(edges[0]) - 1):
                 for s2 in range(len(edges[1]) - 1):
-                    hit = road_editor._segment_intersection(
+                    hit = _segment_intersection(
                         edges[0][s1], edges[0][s1 + 1], edges[1][s2], edges[1][s2 + 1])
                     if hit is not None:
                         violations.append(f"taper_{name}: edges CROSS near "
@@ -134,7 +65,7 @@ def main():
                 break
             for e in entries:
                 mouth = math.hypot(e["left"][0] - e["right"][0],
-                                    e["left"][1] - e["right"][1])
+                                   e["left"][1] - e["right"][1])
                 if mouth < 1.0:
                     violations.append(f"taper_{name}: degenerate mouth ({mouth:.2f} ft)")
 
@@ -157,7 +88,6 @@ def main():
             print(f"       {v}")
         all_violations.extend(violations)
 
-    pygame.quit()
     print(f"\n{total} tapers checked, {len(all_violations)} violation(s).")
     return 1 if all_violations else 0
 

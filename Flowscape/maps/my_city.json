@@ -1,0 +1,1852 @@
+{
+  "version": 1,
+  "nodes": {
+    "65": {
+      "id": 65,
+      "x": 22.124700222140746,
+      "y": 663.5423364900253,
+      "type": "road_node",
+      "data": {}
+    },
+    "66": {
+      "id": 66,
+      "x": -367.8368607535135,
+      "y": 596.6712545583147,
+      "type": "road_node",
+      "data": {}
+    },
+    "67": {
+      "id": 67,
+      "x": -282.70513070664794,
+      "y": -34.72200852691563,
+      "type": "road_node",
+      "data": {}
+    },
+    "68": {
+      "id": 68,
+      "x": -123.79265816126804,
+      "y": -295.7925030032729,
+      "type": "road_node",
+      "data": {}
+    },
+    "69": {
+      "id": 69,
+      "x": 120.25149030571595,
+      "y": -660.4398590258627,
+      "type": "road_node",
+      "data": {}
+    },
+    "70": {
+      "id": 70,
+      "x": 483.72997293645363,
+      "y": 725.4650465280292,
+      "type": "road_node",
+      "data": {}
+    },
+    "71": {
+      "id": 71,
+      "x": 526.88842527075,
+      "y": 635.700674167752,
+      "type": "road_node",
+      "data": {}
+    },
+    "72": {
+      "id": 72,
+      "x": 377.992559083787,
+      "y": 534.2789405550969,
+      "type": "road_node",
+      "data": {}
+    },
+    "73": {
+      "id": 73,
+      "x": 192.61332553239765,
+      "y": 331.3441329856678,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "74": {
+      "id": 74,
+      "x": -460.06280240797184,
+      "y": 273.1708968812714,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "75": {
+      "id": 75,
+      "x": -577.8283036704361,
+      "y": 867.6737887172444,
+      "type": "road_node",
+      "data": {}
+    },
+    "76": {
+      "id": 76,
+      "x": 763.320089480423,
+      "y": 410.2223933258023,
+      "type": "road_node",
+      "data": {}
+    },
+    "77": {
+      "id": 77,
+      "x": 701.3975226037369,
+      "y": 723.588631136854,
+      "type": "road_node",
+      "data": {}
+    },
+    "78": {
+      "id": 78,
+      "x": 836.5015066074536,
+      "y": 729.2178773103795,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "79": {
+      "id": 79,
+      "x": 945.3352456507657,
+      "y": 761.117440024969,
+      "type": "road_node",
+      "data": {}
+    },
+    "80": {
+      "id": 80,
+      "x": 1052.2925693029028,
+      "y": 764.8704855492958,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "81": {
+      "id": 81,
+      "x": 1217.4196290493758,
+      "y": 798.6463204937428,
+      "type": "road_node",
+      "data": {}
+    },
+    "82": {
+      "id": 82,
+      "x": 1373.1645402593142,
+      "y": 804.275709828586,
+      "type": "road_node",
+      "data": {}
+    },
+    "83": {
+      "id": 83,
+      "x": 1495.133401782829,
+      "y": 813.6579299457794,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "84": {
+      "id": 84,
+      "x": 1639.6196774843986,
+      "y": 811.7815145546043,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "85": {
+      "id": 85,
+      "x": 1049.1028957750464,
+      "y": 450.12031085901117,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "86": {
+      "id": 86,
+      "x": 1666.265302156928,
+      "y": 521.3314274027156,
+      "type": "road_node",
+      "data": {}
+    },
+    "87": {
+      "id": 87,
+      "x": 362.8872505493116,
+      "y": 117.80212369867402,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "88": {
+      "id": 88,
+      "x": -843.3848228453523,
+      "y": 81.1176265768959,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "89": {
+      "id": 89,
+      "x": -31.67782172677977,
+      "y": 195.72588395739268,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "91": {
+      "id": 91,
+      "x": 807.593042390591,
+      "y": 855.9275503170433,
+      "type": "road_node",
+      "data": {}
+    },
+    "92": {
+      "id": 92,
+      "x": 748.9230065527693,
+      "y": 625.4315223764577,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "93": {
+      "id": 93,
+      "x": 919.6793840534265,
+      "y": 567.2617862821219,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "94": {
+      "id": 94,
+      "x": 1022.8838053425543,
+      "y": 659.2075720628811,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "95": {
+      "id": 95,
+      "x": 1129.8411647850205,
+      "y": 542.8680282935507,
+      "type": "road_node",
+      "data": {}
+    },
+    "96": {
+      "id": 96,
+      "x": -528.9354163573735,
+      "y": -149.53970182627208,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "97": {
+      "id": 97,
+      "x": -968.0233106839609,
+      "y": -355.94865177551617,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "98": {
+      "id": 98,
+      "x": -611.4989462306099,
+      "y": -502.3113070779316,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "99": {
+      "id": 99,
+      "x": -183.66972320272055,
+      "y": -618.6508150569326,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "100": {
+      "id": 100,
+      "x": -1080.609969985447,
+      "y": -134.5282355355532,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "101": {
+      "id": 101,
+      "x": -1161.2970576247612,
+      "y": -128.8989177813689,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "102": {
+      "id": 102,
+      "x": -1078.7335188039424,
+      "y": -434.759243495414,
+      "type": "road_node",
+      "data": {}
+    },
+    "103": {
+      "id": 103,
+      "x": -619.0047509566282,
+      "y": -624.2801686014463,
+      "type": "road_node",
+      "data": {}
+    },
+    "104": {
+      "id": 104,
+      "x": -46.689252227169156,
+      "y": -688.079258240296,
+      "type": "road_node",
+      "data": {}
+    },
+    "105": {
+      "id": 105,
+      "x": -896.5516264070933,
+      "y": -524.593990981426,
+      "type": "road_node",
+      "data": {}
+    },
+    "106": {
+      "id": 106,
+      "x": -1135.026839507103,
+      "y": -265.87931717626145,
+      "type": "road_node",
+      "data": {}
+    },
+    "107": {
+      "id": 107,
+      "x": -994.2935198540366,
+      "y": 137.55614786305674,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "108": {
+      "id": 108,
+      "x": -450.1247888471462,
+      "y": -179.56292073034527,
+      "type": "road_node",
+      "data": {}
+    },
+    "109": {
+      "id": 109,
+      "x": -874.2011453023559,
+      "y": 282.0423519839676,
+      "type": "road_node",
+      "data": {}
+    },
+    "110": {
+      "id": 110,
+      "x": 1064.1654450130195,
+      "y": 1000.7203270641955,
+      "type": "road_node",
+      "data": {}
+    },
+    "111": {
+      "id": 111,
+      "x": 1424.4427834100384,
+      "y": 1053.260816985006,
+      "type": "road_node",
+      "data": {}
+    },
+    "112": {
+      "id": 112,
+      "x": 1692.7741928649807,
+      "y": 1017.6083519074074,
+      "type": "road_node",
+      "data": {}
+    },
+    "113": {
+      "id": 113,
+      "x": 1103.5707408729681,
+      "y": 685.4778528136156,
+      "type": "road_node",
+      "data": {}
+    },
+    "114": {
+      "id": 114,
+      "x": 1501.376888158102,
+      "y": 726.7595640647398,
+      "type": "road_node",
+      "data": {}
+    },
+    "115": {
+      "id": 115,
+      "x": 1664.6276040940586,
+      "y": 683.6012942611228,
+      "type": "road_node",
+      "data": {}
+    },
+    "116": {
+      "id": 116,
+      "x": 1084.8063006385812,
+      "y": 358.97649252236135,
+      "type": "road_node",
+      "data": {}
+    },
+    "117": {
+      "id": 117,
+      "x": 154.09009364525502,
+      "y": 218.24311918380087,
+      "type": "road_node",
+      "data": {}
+    },
+    "118": {
+      "id": 118,
+      "x": -664.0395077320794,
+      "y": 396.5052298298175,
+      "type": "road_node",
+      "data": {}
+    },
+    "119": {
+      "id": 119,
+      "x": 446.815332669427,
+      "y": 15.587107387895344,
+      "type": "road_node",
+      "data": {}
+    },
+    "120": {
+      "id": 120,
+      "x": 3.9745717701598835,
+      "y": 24.969327505088813,
+      "type": "road_node",
+      "data": {}
+    },
+    "121": {
+      "id": 121,
+      "x": -170.53470809350645,
+      "y": 325.2003712552791,
+      "type": "road_node",
+      "data": {
+        "control": "yield"
+      }
+    },
+    "122": {
+      "id": 122,
+      "x": -271.86271399145926,
+      "y": 450.92213514180304,
+      "type": "road_node",
+      "data": {}
+    }
+  },
+  "roads": {
+    "79": {
+      "id": 79,
+      "start_node_id": 69,
+      "end_node_id": 68,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "80": {
+      "id": 80,
+      "start_node_id": 68,
+      "end_node_id": 67,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "82": {
+      "id": 82,
+      "start_node_id": 66,
+      "end_node_id": 65,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "84": {
+      "id": 84,
+      "start_node_id": 65,
+      "end_node_id": 70,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "85": {
+      "id": 85,
+      "start_node_id": 72,
+      "end_node_id": 73,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "87": {
+      "id": 87,
+      "start_node_id": 73,
+      "end_node_id": 65,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "88": {
+      "id": 88,
+      "start_node_id": 66,
+      "end_node_id": 74,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "89": {
+      "id": 89,
+      "start_node_id": 67,
+      "end_node_id": 74,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "90": {
+      "id": 90,
+      "start_node_id": 66,
+      "end_node_id": 75,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "91": {
+      "id": 91,
+      "start_node_id": 72,
+      "end_node_id": 71,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "92": {
+      "id": 92,
+      "start_node_id": 76,
+      "end_node_id": 71,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "93": {
+      "id": 93,
+      "start_node_id": 71,
+      "end_node_id": 77,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "94": {
+      "id": 94,
+      "start_node_id": 77,
+      "end_node_id": 70,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "95": {
+      "id": 95,
+      "start_node_id": 77,
+      "end_node_id": 78,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "96": {
+      "id": 96,
+      "start_node_id": 78,
+      "end_node_id": 79,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "97": {
+      "id": 97,
+      "start_node_id": 79,
+      "end_node_id": 80,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "98": {
+      "id": 98,
+      "start_node_id": 80,
+      "end_node_id": 81,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "99": {
+      "id": 99,
+      "start_node_id": 81,
+      "end_node_id": 82,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "100": {
+      "id": 100,
+      "start_node_id": 83,
+      "end_node_id": 82,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "101": {
+      "id": 101,
+      "start_node_id": 83,
+      "end_node_id": 84,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "102": {
+      "id": 102,
+      "start_node_id": 68,
+      "end_node_id": 87,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "103": {
+      "id": 103,
+      "start_node_id": 87,
+      "end_node_id": 76,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "104": {
+      "id": 104,
+      "start_node_id": 76,
+      "end_node_id": 85,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "105": {
+      "id": 105,
+      "start_node_id": 85,
+      "end_node_id": 86,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "106": {
+      "id": 106,
+      "start_node_id": 74,
+      "end_node_id": 88,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "107": {
+      "id": 107,
+      "start_node_id": 67,
+      "end_node_id": 89,
+      "curve_offset": [
+        -17.539626822826023,
+        19.03493735156603
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "108": {
+      "id": 108,
+      "start_node_id": 89,
+      "end_node_id": 73,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "110": {
+      "id": 110,
+      "start_node_id": 91,
+      "end_node_id": 78,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "111": {
+      "id": 111,
+      "start_node_id": 92,
+      "end_node_id": 78,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "112": {
+      "id": 112,
+      "start_node_id": 93,
+      "end_node_id": 92,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "113": {
+      "id": 113,
+      "start_node_id": 94,
+      "end_node_id": 93,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "114": {
+      "id": 114,
+      "start_node_id": 95,
+      "end_node_id": 85,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "115": {
+      "id": 115,
+      "start_node_id": 101,
+      "end_node_id": 100,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "116": {
+      "id": 116,
+      "start_node_id": 102,
+      "end_node_id": 97,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "117": {
+      "id": 117,
+      "start_node_id": 103,
+      "end_node_id": 98,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "118": {
+      "id": 118,
+      "start_node_id": 104,
+      "end_node_id": 99,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "119": {
+      "id": 119,
+      "start_node_id": 105,
+      "end_node_id": 97,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "120": {
+      "id": 120,
+      "start_node_id": 106,
+      "end_node_id": 101,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "121": {
+      "id": 121,
+      "start_node_id": 107,
+      "end_node_id": 88,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "122": {
+      "id": 122,
+      "start_node_id": 100,
+      "end_node_id": 88,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "123": {
+      "id": 123,
+      "start_node_id": 100,
+      "end_node_id": 97,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "124": {
+      "id": 124,
+      "start_node_id": 97,
+      "end_node_id": 98,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "125": {
+      "id": 125,
+      "start_node_id": 98,
+      "end_node_id": 99,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "126": {
+      "id": 126,
+      "start_node_id": 68,
+      "end_node_id": 98,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "127": {
+      "id": 127,
+      "start_node_id": 96,
+      "end_node_id": 67,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "128": {
+      "id": 128,
+      "start_node_id": 96,
+      "end_node_id": 97,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "129": {
+      "id": 129,
+      "start_node_id": 96,
+      "end_node_id": 88,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "130": {
+      "id": 130,
+      "start_node_id": 98,
+      "end_node_id": 96,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "131": {
+      "id": 131,
+      "start_node_id": 108,
+      "end_node_id": 96,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "132": {
+      "id": 132,
+      "start_node_id": 109,
+      "end_node_id": 107,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "133": {
+      "id": 133,
+      "start_node_id": 99,
+      "end_node_id": 69,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    },
+    "134": {
+      "id": 134,
+      "start_node_id": 110,
+      "end_node_id": 80,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "135": {
+      "id": 135,
+      "start_node_id": 111,
+      "end_node_id": 83,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "136": {
+      "id": 136,
+      "start_node_id": 112,
+      "end_node_id": 84,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "137": {
+      "id": 137,
+      "start_node_id": 113,
+      "end_node_id": 94,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "138": {
+      "id": 138,
+      "start_node_id": 114,
+      "end_node_id": 83,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "139": {
+      "id": 139,
+      "start_node_id": 115,
+      "end_node_id": 84,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "140": {
+      "id": 140,
+      "start_node_id": 116,
+      "end_node_id": 85,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "141": {
+      "id": 141,
+      "start_node_id": 117,
+      "end_node_id": 73,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "142": {
+      "id": 142,
+      "start_node_id": 118,
+      "end_node_id": 74,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "143": {
+      "id": 143,
+      "start_node_id": 119,
+      "end_node_id": 87,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "144": {
+      "id": 144,
+      "start_node_id": 120,
+      "end_node_id": 89,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "145": {
+      "id": 145,
+      "start_node_id": 121,
+      "end_node_id": 89,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "146": {
+      "id": 146,
+      "start_node_id": 122,
+      "end_node_id": 121,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 10.0,
+      "lane_count": 1,
+      "data": {
+        "profile": {
+          "preset": "driveway"
+        }
+      }
+    },
+    "147": {
+      "id": 147,
+      "start_node_id": 122,
+      "end_node_id": 66,
+      "curve_offset": [
+        0.0,
+        0.0
+      ],
+      "width": 12.0,
+      "lane_count": 1,
+      "data": {}
+    }
+  },
+  "zones": {},
+  "buildings": {
+    "31": {
+      "id": 31,
+      "building_type": "Small House",
+      "x": 807.593042390591,
+      "y": 855.9275503170433,
+      "connection_node_ids": [
+        91
+      ],
+      "seed": 31,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 91,
+            "road": 110,
+            "main": 78
+          }
+        ]
+      }
+    },
+    "32": {
+      "id": 32,
+      "building_type": "Small House",
+      "x": 810.3918082135746,
+      "y": 603.1050399938829,
+      "connection_node_ids": [
+        92
+      ],
+      "seed": 32,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 92,
+            "road": 111,
+            "main": 78
+          }
+        ]
+      }
+    },
+    "33": {
+      "id": 33,
+      "building_type": "Small House",
+      "x": 875.696510161601,
+      "y": 602.1720943273966,
+      "connection_node_ids": [
+        93
+      ],
+      "seed": 33,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 93,
+            "road": 112,
+            "main": 92
+          }
+        ]
+      }
+    },
+    "34": {
+      "id": 34,
+      "building_type": "Small House",
+      "x": 927.0073474064789,
+      "y": 651.6171114157787,
+      "connection_node_ids": [
+        94
+      ],
+      "seed": 34,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 94,
+            "road": 113,
+            "main": 93
+          }
+        ]
+      }
+    },
+    "35": {
+      "id": 35,
+      "building_type": "Small House",
+      "x": 1129.8411647850205,
+      "y": 542.8680282935507,
+      "connection_node_ids": [
+        95
+      ],
+      "seed": 35,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 95,
+            "road": 114,
+            "main": 85
+          }
+        ]
+      }
+    },
+    "36": {
+      "id": 36,
+      "building_type": "Small House",
+      "x": -1161.2970576247612,
+      "y": -128.8989177813689,
+      "connection_node_ids": [
+        101
+      ],
+      "seed": 36,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 101,
+            "road": 115,
+            "main": 100
+          }
+        ]
+      }
+    },
+    "37": {
+      "id": 37,
+      "building_type": "Small House",
+      "x": -1078.7335188039424,
+      "y": -434.759243495414,
+      "connection_node_ids": [
+        102
+      ],
+      "seed": 37,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 102,
+            "road": 116,
+            "main": 97
+          }
+        ]
+      }
+    },
+    "38": {
+      "id": 38,
+      "building_type": "Small House",
+      "x": -619.0047509566282,
+      "y": -624.2801686014463,
+      "connection_node_ids": [
+        103
+      ],
+      "seed": 38,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 103,
+            "road": 117,
+            "main": 98
+          }
+        ]
+      }
+    },
+    "39": {
+      "id": 39,
+      "building_type": "Small House",
+      "x": -46.689252227169156,
+      "y": -688.079258240296,
+      "connection_node_ids": [
+        104
+      ],
+      "seed": 39,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 104,
+            "road": 118,
+            "main": 99
+          }
+        ]
+      }
+    },
+    "40": {
+      "id": 40,
+      "building_type": "Small House",
+      "x": -855.4366692776395,
+      "y": -504.1877224691067,
+      "connection_node_ids": [
+        105
+      ],
+      "seed": 40,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 105,
+            "road": 119,
+            "main": 97
+          }
+        ]
+      }
+    },
+    "41": {
+      "id": 41,
+      "building_type": "Small House",
+      "x": -1135.026839507103,
+      "y": -265.87931717626145,
+      "connection_node_ids": [
+        106
+      ],
+      "seed": 41,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 106,
+            "road": 120,
+            "main": 101
+          }
+        ]
+      }
+    },
+    "42": {
+      "id": 42,
+      "building_type": "Small House",
+      "x": -994.2935198540366,
+      "y": 137.55614786305674,
+      "connection_node_ids": [
+        107
+      ],
+      "seed": 42,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 107,
+            "road": 121,
+            "main": 88
+          }
+        ]
+      }
+    },
+    "43": {
+      "id": 43,
+      "building_type": "Small House",
+      "x": -450.1247888471462,
+      "y": -179.56292073034527,
+      "connection_node_ids": [
+        108
+      ],
+      "seed": 43,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 108,
+            "road": 131,
+            "main": 96
+          }
+        ]
+      }
+    },
+    "44": {
+      "id": 44,
+      "building_type": "Small House",
+      "x": -874.2011453023559,
+      "y": 282.0423519839676,
+      "connection_node_ids": [
+        109
+      ],
+      "seed": 44,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 109,
+            "road": 132,
+            "main": 107
+          }
+        ]
+      }
+    },
+    "45": {
+      "id": 45,
+      "building_type": "Large Business",
+      "x": 1064.1654450130195,
+      "y": 1000.7203270641955,
+      "connection_node_ids": [
+        110
+      ],
+      "seed": 45,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 110,
+            "road": 134,
+            "main": 80
+          }
+        ]
+      }
+    },
+    "46": {
+      "id": 46,
+      "building_type": "Large Business",
+      "x": 1424.4427834100384,
+      "y": 1053.260816985006,
+      "connection_node_ids": [
+        111
+      ],
+      "seed": 46,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 111,
+            "road": 135,
+            "main": 83
+          }
+        ]
+      }
+    },
+    "47": {
+      "id": 47,
+      "building_type": "Large Business",
+      "x": 1692.7741928649807,
+      "y": 1017.6083519074074,
+      "connection_node_ids": [
+        112
+      ],
+      "seed": 47,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 112,
+            "road": 136,
+            "main": 84
+          }
+        ]
+      }
+    },
+    "48": {
+      "id": 48,
+      "building_type": "Cafe",
+      "x": 1103.5707408729681,
+      "y": 685.4778528136156,
+      "connection_node_ids": [
+        113
+      ],
+      "seed": 48,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 113,
+            "road": 137,
+            "main": 94
+          }
+        ]
+      }
+    },
+    "49": {
+      "id": 49,
+      "building_type": "Cafe",
+      "x": 1501.376888158102,
+      "y": 726.7595640647398,
+      "connection_node_ids": [
+        114
+      ],
+      "seed": 49,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 114,
+            "road": 138,
+            "main": 83
+          }
+        ]
+      }
+    },
+    "50": {
+      "id": 50,
+      "building_type": "Cafe",
+      "x": 1664.6276040940586,
+      "y": 683.6012942611228,
+      "connection_node_ids": [
+        115
+      ],
+      "seed": 50,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 115,
+            "road": 139,
+            "main": 84
+          }
+        ]
+      }
+    },
+    "51": {
+      "id": 51,
+      "building_type": "Retail",
+      "x": 1084.8063006385812,
+      "y": 358.97649252236135,
+      "connection_node_ids": [
+        116
+      ],
+      "seed": 51,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 116,
+            "road": 140,
+            "main": 85
+          }
+        ]
+      }
+    },
+    "52": {
+      "id": 52,
+      "building_type": "Retail",
+      "x": 154.09009364525502,
+      "y": 218.24311918380087,
+      "connection_node_ids": [
+        117
+      ],
+      "seed": 52,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 117,
+            "road": 141,
+            "main": 73
+          }
+        ]
+      }
+    },
+    "53": {
+      "id": 53,
+      "building_type": "Supermarket",
+      "x": -664.0395077320794,
+      "y": 396.5052298298175,
+      "connection_node_ids": [
+        118
+      ],
+      "seed": 53,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 118,
+            "road": 142,
+            "main": 74
+          }
+        ]
+      }
+    },
+    "54": {
+      "id": 54,
+      "building_type": "Elementary",
+      "x": 446.815332669427,
+      "y": 15.587107387895344,
+      "connection_node_ids": [
+        119
+      ],
+      "seed": 54,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 119,
+            "road": 143,
+            "main": 87
+          }
+        ]
+      }
+    },
+    "55": {
+      "id": 55,
+      "building_type": "Hospital",
+      "x": 3.9745717701598835,
+      "y": 24.969327505088813,
+      "connection_node_ids": [
+        120
+      ],
+      "seed": 55,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 120,
+            "road": 144,
+            "main": 89
+          }
+        ]
+      }
+    },
+    "56": {
+      "id": 56,
+      "building_type": "Library",
+      "x": -170.53470809350645,
+      "y": 325.2003712552791,
+      "connection_node_ids": [
+        121
+      ],
+      "seed": 56,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 121,
+            "road": 145,
+            "main": 89
+          }
+        ]
+      }
+    },
+    "57": {
+      "id": 57,
+      "building_type": "Park",
+      "x": -271.86271399145926,
+      "y": 450.92213514180304,
+      "connection_node_ids": [
+        122
+      ],
+      "seed": 57,
+      "data": {
+        "driveways": [
+          {
+            "entrance": 122,
+            "road": 146,
+            "main": 121
+          }
+        ]
+      }
+    }
+  }
+}

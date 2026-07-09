@@ -293,6 +293,19 @@ BUILDING_TYPES = {
     "Theater":             _bt("Theater",             RECREATION,  MEDIUM, (20, 70)),
 }
 
+# Canonical picker/palette order for the catalogue (grouped by category).
+# Owned here with the catalogue; the editor Building tool and the web API's
+# building-types schema both consume it. Excludes the back-compat aliases.
+BUILDING_TYPE_ORDER = [
+    "Small House", "Large House", "Small Apartment", "Large Apartment",
+    "Small Business", "Large Business", "Restaurant", "Cafe", "Retail",
+    "Supermarket", "Hotel",
+    "Factory", "Warehouse", "Distribution Center",
+    "Elementary", "High School", "University",
+    "Hospital", "Police", "Fire", "Government", "Library",
+    "Park", "Sports Complex", "Stadium", "Museum", "Theater",
+]
+
 # Back-compat aliases: maps saved with the old archetype names (and the legacy
 # default "House") still resolve to a sensible current type, so old saves and
 # defaults keep working without a migration pass.

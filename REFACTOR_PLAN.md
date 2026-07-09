@@ -1,4 +1,12 @@
-# Flowscape Refactor Plan
+# Flowscape Refactor Plan (CLOSED — superseded by the web migration)
+
+> **Status:** this plan is complete-by-retirement. Steps 1, 2, and 6 (the
+> layering fixes: `road_network.py`, geometry helpers → `road_geometry.py`,
+> routing → `routing.py`) were executed as WEB_MIGRATION_PLAN.md Phase 1.
+> Steps 3–5 (splitting the pygame renderer, input controller, panels, and
+> app entry) became moot when the pygame editor was retired in Phase 6 —
+> the browser client replaced that entire layer. Kept for historical
+> context.
 
 This is the working plan for breaking down the oversized modules so the codebase stays easy for both humans and LLMs to work on. It is intentionally incremental: every step is independently shippable and verifiable against the existing headless tests.
 
@@ -22,8 +30,8 @@ Large, multi-responsibility files are the main friction for editing precisely, r
 
 | File | Lines | Problem |
 |---|---|---|
-| `road_editor.py` | ~4,200 | 6–7 modules fused; includes a misplaced domain model and misplaced geometry helpers. **Primary target.** |
-| `traffic_sim.py` | ~930 | Routing/pathfinding fused with the vehicle runtime. **Secondary target.** |
+| `road_editor.py` | ~3,800 | Renderer, input controller, camera, panels, and app entry still fused. **Primary target.** (The misplaced domain model and geometry helpers have been extracted — steps 1–2 below.) |
+| `traffic_sim.py` | ~800 | ~~Routing/pathfinding fused with the vehicle runtime.~~ **Done** — routing extracted to `routing.py` (step 6). |
 | `intersection_control.py` | ~674 | Cohesive today, but holds multiple controller strategies. **Watch** — split one-strategy-per-file only if a 3rd/4th controller lands. |
 | `road_style.py` | ~540 | Does two jobs (`RoadStyle` vs `RoadProfile`). **Watch** — split only if it grows. |
 
@@ -35,15 +43,15 @@ Ordered so the biggest clarity wins and the layering fixes come first, and so ea
 
 ### `road_editor.py`
 
-1. **`RoadNetwork` → `road_network.py`** — move the domain model out of the UI file.
-2. **Geometry helpers → `road_geometry.py`** — move `_fillet_points`, `_line_intersection`, `_segment_intersection`, `detect_geometry_issues`, `_build_junction_polygon`, `_taper_curve`, `_build_taper_polygon`, etc. into the geometry layer where they belong.
+1. ✅ **Done** — **`RoadNetwork` → `road_network.py`** — the domain model is out of the UI file (along with `NODE_HIT_RADIUS` and `BUILDING_SIZE_FT`); `road_editor` re-exports it so existing imports keep working.
+2. ✅ **Done** — **Geometry helpers → `road_geometry.py`** — `_fillet_points`, `_line_intersection`, `_segment_intersection`, `detect_geometry_issues`, `_build_junction_polygon`, `_taper_curve`, `_build_taper_polygon`, etc. moved verbatim into the geometry layer; `road_editor` re-exports them (the `check_*.py` diagnostics that monkey-patch `road_editor._build_*` still work).
 3. **`RoadRenderer` → `renderer.py`** and **`InputController` → `editor_controller.py`** — the two largest remaining classes (21 and 39 methods).
 4. **Panels → `editor_panels.py`** (`Toolbar`, `SimPanel`, `BuildingPanel`, `GridPanel`, `SettingsPanel`, `Sidebar`, `StartScreen`); **`Camera`/`ScaleBar` → `camera.py`**; **`SnapSystem`/`PlacementManager` → `placement.py`**.
 5. **App entry → `app.py`** (`main`, `run_start_screen`, `_compute_layout`, save-prompt).
 
 ### `traffic_sim.py`
 
-6. **Routing → `routing.py`** — pull `build_routing_graph`, `find_lane_path` (Dijkstra), `lane_polyline` and related helpers out; keep `Vehicle` + `TrafficSimulation` runtime in `traffic_sim.py`.
+6. ✅ **Done** — **Routing → `routing.py`** — `build_routing_graph`, `find_lane_path` (Dijkstra), `lane_polyline`, `lanes_departing/arriving_node`, and the arc-length helpers moved out; `Vehicle` + `TrafficSimulation` runtime stays in `traffic_sim.py`, which re-exports the routing names for existing callers.
 
 ---
 

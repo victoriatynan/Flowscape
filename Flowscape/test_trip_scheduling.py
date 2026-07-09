@@ -186,7 +186,7 @@ def test_resolve_once_then_spawn_and_clearance_block():
 
 
 def test_unreachable_route_resolves_to_none():
-    from road_editor import RoadNetwork
+    from road_network import RoadNetwork
     net = RoadNetwork()
     a = net.add_node(0, 0)
     b = net.add_node(100, 0)

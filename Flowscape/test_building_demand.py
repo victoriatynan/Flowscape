@@ -101,7 +101,7 @@ def test_no_self_trips_and_node_only_sources_nothing():
     assert all(t.origin_building_id != t.dest_building_id for t in trips)
     assert all(t.origin_node_id != t.dest_node_id for t in trips)
     # A network with road nodes but no buildings generates nothing.
-    from road_editor import RoadNetwork
+    from road_network import RoadNetwork
     bare = RoadNetwork()
     n1 = bare.add_node(0, 0)
     n2 = bare.add_node(100, 0)

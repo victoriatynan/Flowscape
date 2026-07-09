@@ -1,0 +1,11 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: #efd8a1; /* fantasy-24 paper */
+}

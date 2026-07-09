@@ -41,7 +41,7 @@ def _grid_node_order(grid):
 def create_test_city():
     """Build and return the fixed test-city RoadNetwork (grid roads + the
     fixed building set, each attached to a node)."""
-    from road_editor import RoadNetwork  # runtime import: avoids a module cycle
+    from road_network import RoadNetwork  # local import: keeps module load light
 
     net = RoadNetwork()
 

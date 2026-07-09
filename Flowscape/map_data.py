@@ -16,11 +16,17 @@ geometry/rendering systems change.
 """
 
 import json
+import os
 
 from buildings import Building
 from road_geometry import Node, Road, Zone, compute_road_geometry
 
 SCHEMA_VERSION = 1
+
+# Canonical map-file location + extension (single source of truth: the editor
+# save dialog and the web API both point here).
+MAPS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maps")
+MAP_FILE_EXTENSION = ".json"
 
 
 def node_to_dict(node):
@@ -185,7 +191,14 @@ def load_map(network, filepath):
     """
     with open(filepath, "r") as f:
         raw = json.load(f)
+    load_map_dict(network, raw)
 
+
+def load_map_dict(network, raw):
+    """Reset and repopulate `network` from an already-parsed map dict (the
+    shape map_to_dict produces). The dict-level core of load_map, split out
+    so the web API can load a map from a request body through the exact
+    same rebuild path as the file loader."""
     # Step 1: empty world state.
     network.nodes.clear()
     network.roads.clear()

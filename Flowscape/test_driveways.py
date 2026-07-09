@@ -16,39 +16,59 @@ These tests assert the D1 contract:
      driveway road) with no orphans left behind.
 """
 
-import os
+import math
 import types
 
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
 import road_style
-from road_editor import InputController, RoadNetwork, Camera
 from road_geometry import Road
+from road_network import RoadNetwork
 from traffic_sim import TrafficSimulation
 from intersection_control import (YieldController, CONTROL_YIELD,
                                   CONTROLLER_TYPES, YIELD_GAP_FT)
 from lane_graph import TURN_STRAIGHT, TURN_LEFT
 
+BUILDING_PLACE_OFFSET = 45.0    # ft: footprint sits this far off its node
+BUILDING_TYPE = "Large Apartment"
 
-def _controller_with_through_road():
-    """A B C through road; return (controller, network, node_b, node_c)."""
+
+def _network_with_through_road():
+    """A B C through road; return (network, node_b, node_c)."""
     net = RoadNetwork()
     a = net.add_node(0.0, 0.0)
     b = net.add_node(300.0, 0.0)
     c = net.add_node(600.0, 0.0)
     net.add_road(a.id, b.id)
     net.add_road(b.id, c.id)
-    ctrl = InputController(net, Camera())   # zoom = 1.0
-    ctrl.active_building_type = "Large Apartment"
-    return ctrl, net, b, c
+    return net, b, c
+
+
+def _place_building(net, node, click_pos, building_type=BUILDING_TYPE):
+    """The placement law every editor applies (formerly the pygame Building
+    tool, now the web client's ghost + POST): the footprint sits
+    BUILDING_PLACE_OFFSET feet off the clicked node, toward the click side,
+    and the building gets its model-B driveway into that node."""
+    dx, dy = click_pos[0] - node.x, click_pos[1] - node.y
+    dist = math.hypot(dx, dy)
+    ux, uy = (0.0, -1.0) if dist < 1e-6 else (dx / dist, dy / dist)
+    pos = (node.x + ux * BUILDING_PLACE_OFFSET,
+           node.y + uy * BUILDING_PLACE_OFFSET)
+    return net.add_building_with_driveway(pos, node.id,
+                                          building_type=building_type)
+
+
+def _delete_building(net, building):
+    """The delete lifecycle both editors perform: the building goes, and
+    each driveway entrance node goes with it (cascading to its road)."""
+    net.remove_building(building.id)
+    for dw in building.data.get("driveways", []):
+        net.remove_node(dw["entrance"])
 
 
 def test_placement_creates_a_narrow_driveway():
-    ctrl, net, b, c = _controller_with_through_road()
+    net, b, c = _network_with_through_road()
     n0, r0, bld0 = len(net.nodes), len(net.roads), len(net.buildings)
 
-    ctrl._place_building((300.0, 6.0))      # click right beside node B
+    _place_building(net, b, (300.0, 6.0))   # click right beside node B
 
     assert len(net.nodes) == n0 + 1, "an off-road entrance node is created"
     assert len(net.roads) == r0 + 1, "a driveway road is created"
@@ -70,17 +90,17 @@ def test_placement_creates_a_narrow_driveway():
 
 
 def test_clicked_node_becomes_a_junction():
-    ctrl, net, b, c = _controller_with_through_road()
+    net, b, c = _network_with_through_road()
     assert len(net.roads_for_node(b.id)) == 2      # just the through road halves
-    ctrl._place_building((300.0, 6.0))
+    _place_building(net, b, (300.0, 6.0))
     assert len(net.roads_for_node(b.id)) == 3, (
         "the driveway makes the clicked node a junction (reservation-managed)")
     print("ok: the clicked node becomes a driveway junction")
 
 
 def test_trip_originates_off_road_through_the_driveway():
-    ctrl, net, b, c = _controller_with_through_road()
-    ctrl._place_building((300.0, 6.0))
+    net, b, c = _network_with_through_road()
+    _place_building(net, b, (300.0, 6.0))
     building = list(net.buildings.values())[-1]
     ent = building.data["driveways"][0]["entrance"]
 
@@ -96,15 +116,14 @@ def test_trip_originates_off_road_through_the_driveway():
 
 
 def test_deleting_the_building_removes_its_driveway():
-    ctrl, net, b, c = _controller_with_through_road()
+    net, b, c = _network_with_through_road()
     n0, r0, bld0 = len(net.nodes), len(net.roads), len(net.buildings)
-    ctrl._place_building((300.0, 6.0))
+    _place_building(net, b, (300.0, 6.0))
     building = list(net.buildings.values())[-1]
     ent = building.data["driveways"][0]["entrance"]
     dwy = building.data["driveways"][0]["road"]
 
-    ctrl.selected_building = building
-    ctrl.delete_selected()
+    _delete_building(net, building)
 
     assert building.id not in net.buildings
     assert ent not in net.nodes, "the entrance node is removed"
@@ -149,8 +168,8 @@ def test_yield_gives_through_traffic_priority():
 
 
 def test_driveway_junction_is_yield_controlled():
-    ctrl, net, b, c = _controller_with_through_road()
-    ctrl._place_building((300.0, 6.0))
+    net, b, c = _network_with_through_road()
+    _place_building(net, b, (300.0, 6.0))
     assert net.nodes[b.id].data.get("control") == CONTROL_YIELD, (
         "the driveway junction yields (through-traffic keeps priority)")
     print("ok: placing a driveway sets its junction to yield")

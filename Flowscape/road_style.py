@@ -34,6 +34,10 @@ ROAD_WIDTH_SCALE = 2.6
 # Lane markings
 # ----------------------------------------------------------------------
 
+# Painted line width as a fraction of the carriageway width (the retired
+# editor's icon-style ratio; the web client draws markings at the same scale).
+ROAD_MARK_RATIO = 0.10
+
 MARKING_SOLID = "solid"
 MARKING_DASHED = "dashed"
 MARKING_DOTTED = "dotted"

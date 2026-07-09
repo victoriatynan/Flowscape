@@ -24,13 +24,10 @@ These tests cover:
      circle if the art is ever missing.
 """
 
-import os
 import types
 
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
-from road_editor import RoadNetwork, InputController, Camera
+from road_network import RoadNetwork
+from traffic_sim import TrafficSimulation
 from intersection_control import (TrafficLightController, CONTROL_TRAFFIC_LIGHT,
                                   CONTROLLER_TYPES, control_settings_schema,
                                   TL_GREEN, TL_YELLOW, TL_ALL_RED, TL_STATE_COLORS,
@@ -210,22 +207,29 @@ def test_visual_layers_fall_back_to_a_plain_circle_without_art():
 
 
 def test_setting_control_type_rebuilds_traffic_light():
+    """The configuration sequence every editor performs (the web API's
+    control endpoint; formerly the pygame inspector): write node.data,
+    rebuild, and the factory re-instantiates the controller with its
+    settings applied -- exactly like stop sign / yield."""
     net, c, roads = _four_way()
-    ctrl = InputController(net, Camera())
-    ctrl.set_node_control(c, CONTROL_TRAFFIC_LIGHT)
+    sim = TrafficSimulation(net)
 
-    tl = ctrl.traffic.intersections.controller_for(c.id)
+    c.data["control"] = CONTROL_TRAFFIC_LIGHT
+    sim.intersections.rebuild()
+    tl = sim.intersections.controller_for(c.id)
     assert isinstance(tl, TrafficLightController)
 
-    ctrl.set_node_control_setting(c, "green_duration", 40.0)
-    tl = ctrl.traffic.intersections.controller_for(c.id)
+    c.data["green_duration"] = 40.0
+    sim.intersections.rebuild()
+    tl = sim.intersections.controller_for(c.id)
     assert tl.green_duration == 40.0
 
-    ctrl.set_node_control_setting(c, "initial_phase", 1)
-    tl = ctrl.traffic.intersections.controller_for(c.id)
+    c.data["initial_phase"] = 1
+    sim.intersections.rebuild()
+    tl = sim.intersections.controller_for(c.id)
     tl.begin_step([], 0.01)   # resolves the (rebuilt controller's) initial_phase
     assert tl._phase == 1, "initial_phase setting reaches the live controller"
-    print("ok: selecting Traffic Light in the editor rebuilds it, settings apply")
+    print("ok: selecting Traffic Light rebuilds it via the factory, settings apply")
 
 
 if __name__ == "__main__":

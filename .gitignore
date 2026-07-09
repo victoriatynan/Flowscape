@@ -13,6 +13,10 @@ __pycache__/
 # Generated visual-test renders (recreated by the test_*_visual.py scripts)
 Flowscape/test_output/
 
+# Web client: dependencies and build output (rebuilt with npm install / npm run build)
+web/node_modules/
+web/dist/
+
 # Local archive of retired files (kept out of the repo)
 archive/
 

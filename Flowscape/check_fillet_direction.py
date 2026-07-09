@@ -1,13 +1,27 @@
+"""Diagnostic: junction corner-fillet geometry across the stress scenarios.
+
+For every junction ring build_node_surfaces() assembles (inner asphalt AND
+outer sidewalk/shoulder rings), re-derives each corner's fillet at high
+sample count and checks:
+  1. FACES IN: convex corners (< 180 deg) never bulge outward past their
+     chord; reflex gaps are supposed to bow outward and are exempt.
+  2. NO LOOP: no connector polyline self-intersects.
+  3. RING-LEVEL: no two corner connectors cross each other.
+
+Pure geometry -- no rendering (re-based from the pygame renderer per
+WEB_MIGRATION_PLAN.md Phase 6; the ring capture now hooks
+build_node_surfaces' junction_builder instead of monkey-patching the
+renderer). Known pre-existing violations are reported, not asserted:
+run and compare the final count.
+
+Run:  python check_fillet_direction.py    (exit 1 if any violations)
+"""
+
 import math
-import os
 
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-
-import pygame
-
-import road_editor
-from test_intersections_visual import SCENARIOS, render_scenario, _spoke_network
-from road_editor import CANVAS_WIDTH, CANVAS_HEIGHT
+from junction_scenarios import SCENARIOS, EXTRA
+from road_geometry import (build_node_surfaces, _build_junction_polygon,
+                           _fillet_points, _segment_intersection)
 
 
 def _polyline_self_intersects(pts):
@@ -17,8 +31,8 @@ def _polyline_self_intersects(pts):
         for j in range(i + 2, len(segs)):
             if i == 0 and j == len(segs) - 1 and pts[0] == pts[-1]:
                 continue  # closed-polyline shared endpoint, not a loop
-            hit = road_editor._segment_intersection(segs[i][0], segs[i][1],
-                                                     segs[j][0], segs[j][1])
+            hit = _segment_intersection(segs[i][0], segs[i][1],
+                                        segs[j][0], segs[j][1])
             if hit is not None:
                 return hit
     return None
@@ -33,7 +47,7 @@ def check_entries(entries, node_pos, label, violations):
         ang_a = math.atan2(a["outward"][1], a["outward"][0])
         ang_b = math.atan2(b["outward"][1], b["outward"][0])
         sector = (ang_b - ang_a) % (2 * math.pi)
-        fillet = road_editor._fillet_points(a["left"], b["right"], node_pos, sector, samples=24)
+        fillet = _fillet_points(a["left"], b["right"], node_pos, sector, samples=24)
         connector = [a["left"]] + fillet + [b["right"]]
 
         ax, ay = a["left"]
@@ -62,10 +76,9 @@ def check_entries(entries, node_pos, label, violations):
             violations.append(f"{label} corner {i}: connector SELF-INTERSECTS near "
                               f"({hit[0]:.1f}, {hit[1]:.1f}) (chord {clen:.1f} ft)")
 
-    # 3. ring-level: no two corner connectors may cross each other, and no
-    #    connector may cross another road's own near-end chord
-    #    [right -> left]; either crossing reads as a loop/overlap in the
-    #    drawn lane lines even when each curve alone is well-formed.
+    # 3. ring-level: no two corner connectors may cross each other; either
+    #    crossing reads as a loop/overlap in the drawn lane lines even when
+    #    each curve alone is well-formed.
     connectors = []
     for i in range(n):
         a = ordered[i]
@@ -73,16 +86,14 @@ def check_entries(entries, node_pos, label, violations):
         ang_a = math.atan2(a["outward"][1], a["outward"][0])
         ang_b = math.atan2(b["outward"][1], b["outward"][0])
         sector = (ang_b - ang_a) % (2 * math.pi)
-        fillet = road_editor._fillet_points(a["left"], b["right"], node_pos, sector, samples=24)
+        fillet = _fillet_points(a["left"], b["right"], node_pos, sector, samples=24)
         connectors.append([a["left"]] + fillet + [b["right"]])
     for i in range(n):
         for j in range(i + 1, n):
             pi, pj = connectors[i], connectors[j]
             for s in range(len(pi) - 1):
                 for t in range(len(pj) - 1):
-                    # consecutive connectors share no endpoints, but skip
-                    # near-touching first/last segments at shared roads
-                    hit = road_editor._segment_intersection(pi[s], pi[s + 1], pj[t], pj[t + 1])
+                    hit = _segment_intersection(pi[s], pi[s + 1], pj[t], pj[t + 1])
                     if hit is None:
                         continue
                     # ignore contact at the connectors' own endpoints
@@ -97,59 +108,29 @@ def check_entries(entries, node_pos, label, violations):
                 break
 
 
-# Extra stress scenarios beyond the visual-test suite: very acute wedges,
-# acute pairs combined with asymmetric profiles, near-parallel double pairs.
-EXTRA = [
-    ("acute_20", lambda: _spoke_network([0, 20, 180], length=300.0)),
-    ("acute_15", lambda: _spoke_network([0, 15, 180], length=340.0)),
-    ("acute_10", lambda: _spoke_network([0, 10, 180], length=400.0)),
-    ("acute_double_x", lambda: _spoke_network([0, 15, 180, 195], length=340.0)),
-    ("acute_15_mixed", lambda: _spoke_network([0, 15, 180], length=340.0,
-                                               presets=["highway", "residential", "expressway"])),
-    ("acute_4way_mixed", lambda: _spoke_network([0, 25, 120, 250], length=300.0,
-                                                 presets=["expressway", "residential",
-                                                          "urban", "highway"])),
-    ("acute_5way_fan", lambda: _spoke_network([0, 18, 36, 54, 200], length=380.0)),
-    ("reflex_fan_340", lambda: _spoke_network([0, 10, 20], length=420.0)),
-    ("acute_curved", lambda: _spoke_network([0, 25, 180], length=300.0,
-                                             curve_offsets=[(0, 60), (0, -60), (0, 0)])),
-    ("acute_curved_in", lambda: _spoke_network([0, 25, 180], length=300.0,
-                                                curve_offsets=[(0, -50), (0, 50), (0, 0)])),
-]
-
-
 def main():
-    pygame.init()
-    pygame.display.set_mode((CANVAS_WIDTH, CANVAS_HEIGHT))
-    font = pygame.font.SysFont("monospace", 13)
-    surface = pygame.Surface((CANVAS_WIDTH, CANVAS_HEIGHT))
-
     total = 0
     all_violations = []
-    for name, builder in list(SCENARIOS) + EXTRA:
+    for name, builder in list(SCENARIOS) + list(EXTRA):
         net = builder()
 
+        # Capture every junction ring (inner asphalt + outer shoulder) the
+        # assembly pass builds, with its exact node position.
         captured = []
-        orig = road_editor._build_junction_polygon
 
         def capture(entries, node_pos, _captured=captured):
-            _captured.append(entries)
-            return orig(entries, node_pos)
+            _captured.append((entries, node_pos))
+            return _build_junction_polygon(entries, node_pos)
 
-        road_editor._build_junction_polygon = capture
-        try:
-            render_scenario(name, net, surface, font)
-        finally:
-            road_editor._build_junction_polygon = orig
+        build_node_surfaces(net, junction_builder=capture)
 
         violations = []
-        for entries in captured:
-            pts = [e["left"] for e in entries] + [e["right"] for e in entries]
-            gx = sum(p[0] for p in pts) / len(pts)
-            gy = sum(p[1] for p in pts) / len(pts)
-            node = min(net.nodes.values(), key=lambda nd: math.hypot(nd.x - gx, nd.y - gy))
+        for entries, node_pos in captured:
+            node = min(net.nodes.values(),
+                       key=lambda nd: math.hypot(nd.x - node_pos[0],
+                                                 nd.y - node_pos[1]))
             total += len(entries)
-            check_entries(entries, (node.x, node.y), f"{name}/node{node.id}", violations)
+            check_entries(entries, node_pos, f"{name}/node{node.id}", violations)
 
         status = "FAIL" if violations else "ok"
         print(f"[{status}] {name}: {len(captured)} junction ring(s) checked")
@@ -157,7 +138,6 @@ def main():
             print(f"       {v}")
         all_violations.extend(violations)
 
-    pygame.quit()
     print(f"\n{total} corner fillets checked, {len(all_violations)} violation(s).")
     return 1 if all_violations else 0
 
