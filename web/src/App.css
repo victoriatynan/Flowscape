@@ -70,6 +70,7 @@
 
 .toolbar button,
 .editbar button,
+.tool-rail button,
 .inspector button,
 .design button {
   font: inherit;
@@ -79,10 +80,14 @@
   background: var(--ui-button-bg);
   color: var(--ui-panel-text);
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .toolbar button:hover,
 .editbar button:hover,
+.tool-rail button:hover,
 .inspector button:hover,
 .design button:hover {
   background: var(--ui-button-hover);
@@ -90,6 +95,7 @@
 }
 
 .editbar button.active,
+.tool-rail button.active,
 .toolbar button.active {
   background: var(--ui-accent);
   color: var(--ui-panel-bg);
@@ -98,6 +104,7 @@
 
 .toolbar select,
 .editbar select,
+.tool-rail select,
 .inspector select,
 .inspector input,
 .design select,
@@ -258,3 +265,659 @@
   font: calc(var(--ui-font-size) - 1px)/1.5 monospace;
   cursor: pointer;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Heritage Atlas preset — decorative craftsmanship (UI-Graphic-Design brief).
+   All rules are gated on the preset name so they touch only the Heritage Atlas
+   chrome; layout, sizing, and interactions are untouched. Purely visual.
+   ───────────────────────────────────────────────────────────────────────── */
+
+:root[data-ui-preset='Heritage Atlas'] {
+  /* Antique manuscript title face. */
+  --ha-engraved: 'IM Fell English SC', 'IM Fell English', 'Cormorant Garamond', Georgia, serif;
+  --ha-brass: color-mix(in srgb, var(--ui-accent) 60%, transparent);
+  --ha-hairline: color-mix(in srgb, var(--ui-outline) 45%, transparent);
+  /* Hand-painted botanical accent hues (from the image-1 reference plate). */
+  --ha-sage: #8a9a5b;
+  --ha-olive: #6b6b2f;
+  --ha-rose: #c58a86;
+  --ha-terracotta: #b5623c;
+  --ha-plum: #8a7aa0;
+  --ha-gold: #c7a049;
+  --ha-bronze: #8a6a34;
+
+  /* Hand-drawn dip-pen ink border: a rounded-rect outline pushed around by the
+     shared waver (heritageArt.ts — rounded, irregular undulations), baked into
+     an SVG path so every panel/button is framed by the same hand-drawn line the
+     roads use. This is the static seed; the app's boil timer swaps in fresh
+     seeds via inkBorderUri(). Keep in sync with inkBorderUri(5). */
+  --ha-ink-border: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'160'%20height%3D'160'%3E%3Cpath%20d%3D'M20.34%2014.03Q22%2013.71%2027.8%2014.01Q33.6%2014.32%2038.6%2014.13Q43.6%2013.95%2044.4%2013.76Q45.2%2013.56%2051%2012.47Q56.8%2011.38%2062.6%2011.31Q68.4%2011.25%2073.69%2010.84Q78.98%2010.44%2079.49%2010.32Q80%2010.2%2085.8%209.44Q91.6%208.69%2097.4%2012.54Q103.2%2016.39%20108.73%2016.82Q114.27%2017.25%20114.53%2017.23Q114.8%2017.22%20120.6%2017.01Q126.4%2016.8%20131.82%2016.81Q137.24%2016.82%20138.26%2016.88Q139.27%2016.93%20140.19%2017.37Q141.11%2017.81%20141.8%2018.56Q142.48%2019.32%20142.79%2020.66Q143.09%2022%20144.17%2027.8Q145.26%2033.6%20148.33%2038.81Q151.41%2044.03%20151.45%2044.61Q151.48%2045.2%20150.67%2051Q149.86%2056.8%20149.55%2062.6Q149.23%2068.4%20149.02%2074.2Q148.81%2080%20146.59%2085.1Q144.38%2090.19%20144.06%2090.9Q143.74%2091.6%20143.84%2097.4Q143.94%20103.2%20144.89%20108.03Q145.83%20112.86%20145.82%20113.83Q145.81%20114.8%20145.59%20120.09Q145.36%20125.39%20145.34%20125.89Q145.32%20126.4%20145.93%20132.15Q146.54%20137.91%20146.58%20139.78Q146.61%20141.64%20145.74%20143.39Q144.88%20145.13%20143.27%20146.26Q141.66%20147.39%20139.83%20148.01Q138%20148.63%20132.2%20149.73Q126.4%20150.83%20120.6%20151.19Q114.8%20151.55%20109%20150.41Q103.2%20149.27%2097.4%20145.96Q91.6%20142.65%2085.8%20143.39Q80%20144.13%2074.2%20143.99Q68.4%20143.85%2062.6%20143.24Q56.8%20142.63%2051%20142.79Q45.2%20142.95%2039.55%20142.98Q33.89%20143%2033.75%20143Q33.6%20143%2028.16%20143.18Q22.72%20143.36%2021.25%20143.92Q19.78%20144.48%2017.75%20144.4Q15.71%20144.31%2013.77%20143.06Q11.82%20141.81%2010.91%20139.91Q9.99%20138%2011.19%20133.04Q12.39%20128.08%2012.71%20127.24Q13.03%20126.4%2012.97%20120.6Q12.91%20114.8%2010.47%20109Q8.03%20103.2%2010.5%2097.4Q12.97%2091.6%2012.92%2085.8Q12.87%2080%2010.88%2074.2Q8.89%2068.4%2010.38%2062.6Q11.88%2056.8%2011.66%2051Q11.45%2045.2%2010.51%2039.4Q9.57%2033.6%2010.77%2027.7Q11.96%2021.79%2012.54%2019.98Q13.11%2018.17%2014.28%2016.77Q15.46%2015.37%2017.07%2014.86Q18.69%2014.35%2020.34%2014.03Z'%20fill%3D'none'%20stroke%3D'%235a4632'%20stroke-width%3D'10'%20stroke-linejoin%3D'round'%20stroke-linecap%3D'round'%2F%3E%3C%2Fsvg%3E");
+
+  /* Visible warm paper fibre + fine speckle, painted behind every panel. */
+  --ha-paper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.045 0.09' numOctaves='4' seed='11' result='f'/%3E%3CfeColorMatrix in='f' type='matrix' values='0 0 0 0 0.28  0 0 0 0 0.20  0 0 0 0 0.10  0 0 0 0.5 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23p)'/%3E%3C/svg%3E");
+}
+
+/* Panels read as framed inserts in a reference book: a fine inner double-line,
+   a gentle drop shadow, and an extremely subtle printed-linen texture. */
+:root[data-ui-preset='Heritage Atlas'] .toolbar,
+:root[data-ui-preset='Heritage Atlas'] .editbar,
+:root[data-ui-preset='Heritage Atlas'] .inspector,
+:root[data-ui-preset='Heritage Atlas'] .analysis,
+:root[data-ui-preset='Heritage Atlas'] .design {
+  box-shadow:
+    inset 0 0 0 1px var(--ha-hairline),   /* second, inset frame line */
+    0 6px 20px rgba(0, 0, 0, 0.42);        /* soft page shadow */
+  background-image:
+    repeating-linear-gradient(90deg,
+      rgba(198, 151, 73, 0.03) 0 1px, transparent 1px 5px),
+    repeating-linear-gradient(0deg,
+      rgba(198, 151, 73, 0.03) 0 1px, transparent 1px 5px);
+}
+
+/* Brand + section titles: uppercase, wide-tracked, engraved serif in brass. */
+:root[data-ui-preset='Heritage Atlas'] .brand {
+  font-family: var(--ha-engraved);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-weight: 600;
+}
+
+:root[data-ui-preset='Heritage Atlas'] .analysis .section {
+  font-family: var(--ha-engraved);
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  font-weight: 600;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--ha-hairline);   /* chapter-divider rule */
+}
+
+/* Metrics as precision-instrument readouts: aligned, tabular, brass-toned. */
+:root[data-ui-preset='Heritage Atlas'] .analysis .stat span:last-child {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--ui-panel-text) 70%, var(--ui-accent));
+}
+
+/* Buttons: matte engraved plates with a faint top highlight; refined,
+   deliberate hover elevation rather than a flat colour swap. */
+:root[data-ui-preset='Heritage Atlas'] .toolbar button,
+:root[data-ui-preset='Heritage Atlas'] .editbar button,
+:root[data-ui-preset='Heritage Atlas'] .inspector button,
+:root[data-ui-preset='Heritage Atlas'] .design button {
+  background-image: linear-gradient(
+    180deg, rgba(236, 220, 176, 0.06), transparent 55%);
+  transition: background-color 140ms ease, border-color 140ms ease,
+              box-shadow 140ms ease, transform 140ms ease;
+}
+
+:root[data-ui-preset='Heritage Atlas'] .toolbar button:hover,
+:root[data-ui-preset='Heritage Atlas'] .editbar button:hover,
+:root[data-ui-preset='Heritage Atlas'] .inspector button:hover,
+:root[data-ui-preset='Heritage Atlas'] .design button:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  transform: translateY(-1px);
+}
+
+/* Active tool sits in a brass plate with a soft glow, like a lit control. */
+:root[data-ui-preset='Heritage Atlas'] .editbar button.active,
+:root[data-ui-preset='Heritage Atlas'] .toolbar button.active {
+  box-shadow: 0 0 10px var(--ha-brass);
+  transform: none;
+}
+
+/* The connection dot becomes a small brass-ringed survey marker. */
+:root[data-ui-preset='Heritage Atlas'] .dot {
+  box-shadow: 0 0 0 1px var(--ha-hairline), 0 0 6px rgba(0, 0, 0, 0.4);
+}
+
+/* ── Phase 1: engraved icons, framed collapsible cards, decorative frames ── */
+
+/* Tool icons ride in brass medallions — engraved plate, not a flat glyph. */
+:root[data-ui-preset='Heritage Atlas'] .editbar button .ha-ico,
+:root[data-ui-preset='Heritage Atlas'] .tool-rail button .ha-ico,
+:root[data-ui-preset='Heritage Atlas'] .toolbar button .ha-ico {
+  box-sizing: content-box;
+  padding: 3px;
+  border: 1px solid var(--ha-hairline);
+  border-radius: 50%;
+  color: var(--ui-accent);
+  background: radial-gradient(circle at 50% 34%,
+    color-mix(in srgb, var(--ui-accent) 16%, transparent), transparent 72%);
+}
+
+/* On the active (brass-filled) tool the medallion inverts for contrast. */
+:root[data-ui-preset='Heritage Atlas'] .editbar button.active .ha-ico,
+:root[data-ui-preset='Heritage Atlas'] .tool-rail button.active .ha-ico,
+:root[data-ui-preset='Heritage Atlas'] .toolbar button.active .ha-ico {
+  color: var(--ui-panel-bg);
+  border-color: color-mix(in srgb, var(--ui-panel-bg) 55%, transparent);
+  background: color-mix(in srgb, var(--ui-panel-text) 22%, transparent);
+}
+
+/* Analysis sections become collapsible chapter cards. The header keeps the
+   .section class so the engraved-title styling above still applies; here we
+   just neutralise the default <button> chrome and lay it out. */
+.analysis .section {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ui-accent);
+  font: inherit;
+  font-weight: 700;
+}
+
+.analysis .section .chevron {
+  opacity: 0.6;
+  font-size: 0.85em;
+}
+
+.analysis-card-body {
+  margin-top: 2px;
+}
+
+/* In Heritage Atlas each card is a framed insert — a fine double rule, a
+   parchment-tinted ground and a soft page shadow, like a boxed figure. */
+:root[data-ui-preset='Heritage Atlas'] .analysis-card {
+  margin: 8px 0 0;
+  padding: 6px 9px 8px;
+  border: 1px solid var(--ha-hairline);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ui-button-bg) 45%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--ui-accent) 8%, transparent);
+}
+
+:root[data-ui-preset='Heritage Atlas'] .analysis-card:first-of-type {
+  margin-top: 4px;
+}
+
+/* Decorative panel frame overlay (HeritageIcons.tsx): corner flourishes and a
+   compass rose in brass, floating over the panel edges without ever catching
+   pointer events. Only rendered inside Heritage Atlas panels. */
+.ha-frame {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  color: var(--ui-accent);
+  opacity: 0.5;
+}
+
+.ha-frame > svg { position: absolute; }
+.ha-corner.tl { top: 3px; left: 3px; }
+.ha-corner.tr { top: 3px; right: 3px; transform: scaleX(-1); }
+.ha-corner.bl { bottom: 3px; left: 3px; transform: scaleY(-1); }
+.ha-corner.br { bottom: 3px; right: 3px; transform: scale(-1, -1); }
+.ha-compass { top: 3px; left: 50%; transform: translateX(-50%); }
+
+/* Give the compass rose clear air at the top of framed panels. */
+:root[data-ui-preset='Heritage Atlas'] .analysis,
+:root[data-ui-preset='Heritage Atlas'] .inspector {
+  padding-top: 30px;
+}
+
+/* ── Phase 2: docked, resizable three-region workspace ─────────────────────
+   Only active in Heritage Atlas (.app.ha-docked). The default presets keep
+   their floating-panel layout untouched. A CSS grid gives a true left rail /
+   centre viewport / right dock split, so collapsing a region genuinely hands
+   its space back to the map. */
+
+.app.ha-docked {
+  display: grid;
+  grid-template-columns: var(--ha-left, 60px) 1fr var(--ha-right, 272px);
+  grid-template-rows: auto 1fr var(--ha-bar, 56px);
+}
+
+/* Bottom control bar spans all three columns; the viewport (row 2) shrinks as
+   the bar grows. */
+.app.ha-docked .control-bar {
+  grid-column: 1 / -1;
+  grid-row: 3;
+}
+
+/* Toolbar becomes a real top band spanning all three columns. */
+.app.ha-docked .toolbar {
+  position: static;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  border-radius: 0;
+  border-inline: none;
+  border-top: none;
+  z-index: 2;
+}
+
+/* Canvas is the centre cell and reflows as the docks resize/collapse. */
+.app.ha-docked .world {
+  position: relative;
+  inset: auto;
+  grid-column: 2;
+  grid-row: 2;
+  width: 100%;
+  height: 100%;
+}
+
+.app.ha-docked .tool-rail { grid-column: 1; grid-row: 2; }
+.app.ha-docked .right-dock { grid-column: 3; grid-row: 2; }
+
+/* Vertical tool rail — icon-first, labels hidden (tooltips carry the names). */
+.tool-rail {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px 8px;
+  overflow: visible;
+  background: color-mix(in srgb, var(--ui-panel-bg)
+              calc(var(--ui-panel-opacity) * 100%), transparent);
+  border-right: var(--ui-outline-width) solid var(--ui-outline);
+  color: var(--ui-panel-text);
+  font: var(--ui-font-size)/1.5 var(--ui-font-family);
+}
+
+.tool-rail button {
+  justify-content: center;
+  padding: 6px;
+}
+
+.tool-rail button > span,
+.tool-rail .hint {
+  display: none;                 /* icon-only rail; names live in tooltips */
+}
+
+.tool-rail select {
+  width: 100%;
+  font-size: calc(var(--ui-font-size) - 2px);
+}
+
+/* Right dock stacks the analysis/inspector/design panels and scrolls. */
+.right-dock {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 12px 16px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: color-mix(in srgb, var(--ui-panel-bg)
+              calc(var(--ui-panel-opacity) * 100%), transparent);
+  border-left: var(--ui-outline-width) solid var(--ui-outline);
+  color: var(--ui-panel-text);
+}
+
+/* Docked panels drop their floating offsets and fill the dock width. They
+   stay position:relative so each panel's decorative frame anchors to itself. */
+.right-dock .analysis,
+.right-dock .inspector,
+.right-dock .design {
+  position: relative;
+  inset: auto;
+  width: auto;
+  max-height: none;
+  margin: 0;
+}
+
+.dock-empty {
+  opacity: 0.6;
+  font-style: italic;
+  font-size: calc(var(--ui-font-size) - 1px);
+  padding: 8px 2px;
+}
+
+/* Thin drag handles sit on the inner edge of each dock. */
+.dock-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  z-index: 3;
+}
+.dock-resize.left { right: -3px; }
+.dock-resize.right { left: -3px; }
+.dock-resize:hover {
+  background: linear-gradient(90deg, transparent,
+    color-mix(in srgb, var(--ui-accent) 40%, transparent), transparent);
+}
+
+/* Collapse buttons (a caret) and the floating re-open tabs. */
+.dock-collapse {
+  padding: 0 6px !important;
+  line-height: 1.4;
+  opacity: 0.75;
+}
+
+.dock-tab {
+  position: absolute;
+  top: 64px;
+  z-index: 4;
+  padding: 10px 4px !important;
+  border-radius: 4px;
+  background: var(--ui-button-bg);
+  color: var(--ui-panel-text);
+  border: var(--ui-outline-width) solid var(--ui-button-border);
+  cursor: pointer;
+  font: var(--ui-font-size)/1 var(--ui-font-family);
+}
+.dock-tab.left { left: 0; border-left: none; }
+.dock-tab.right { right: 0; border-right: none; }
+.dock-tab:hover { border-color: var(--ui-accent); }
+
+/* ── Phase 4: pins, instrument gauges, hand-illustrated accents, control bar ─ */
+
+/* Pin ("keep open") toggle — a nautical star, filled when pinned. */
+.dock-pin {
+  padding: 0 6px !important;
+  line-height: 1.3;
+  color: var(--ui-accent);
+  opacity: 0.7;
+}
+.dock-pin[aria-pressed='true'] { opacity: 1; }
+.rail-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+.dock-head {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+/* Instrument dials in the analysis cards. */
+.ha-gauge-row {
+  display: flex;
+  justify-content: space-around;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--ui-accent);
+}
+.ha-gauge { text-align: center; }
+.ha-gauge-read {
+  margin-top: -14px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: calc(var(--ui-font-size) + 1px);
+  color: var(--ui-panel-text);
+}
+.ha-gauge-label {
+  font-size: calc(var(--ui-font-size) - 3px);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+/* Four-point navigation-star sparkle. */
+.ha-sparkle { color: var(--ui-accent); opacity: 0.8; flex: none; }
+
+/* ── Bottom simulation control bar ── */
+.control-bar {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 14px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--ui-panel-bg)
+              calc(var(--ui-panel-opacity) * 100%), transparent);
+  border-top: var(--ui-outline-width) solid var(--ui-outline);
+  box-shadow: inset 0 1px 0 var(--ha-hairline);
+  color: var(--ui-panel-text);
+  font: var(--ui-font-size)/1.4 var(--ui-font-family);
+}
+
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* Engraved brass playback buttons with a tactile pressed state. */
+.control-bar .playback { display: flex; gap: 8px; }
+.control-bar button.brass {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  color: var(--ui-accent);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--ui-accent) 22%, var(--ui-button-bg)),
+    var(--ui-button-bg));
+  border: 1px solid var(--ui-button-border);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+  box-shadow: 0 1px 0 var(--ha-hairline), 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+.control-bar button.brass:hover {
+  border-color: var(--ui-accent);
+  transform: translateY(-1px);
+}
+.control-bar button.brass:active {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.5);
+}
+
+/* Surveying-ruler timeline. */
+.timeline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.daynight { font-size: 1.15em; color: var(--ui-accent); }
+.ha-ruler {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  color: var(--ui-panel-text);
+  opacity: 0.85;
+}
+.ha-ruler-num {
+  fill: var(--ui-panel-text);
+  opacity: 0.7;
+  font-size: 7px;
+  font-family: var(--ui-font-family);
+}
+.clock-read {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--ui-accent);
+  font-size: calc(var(--ui-font-size) + 2px);
+}
+
+/* Live-stat chips (precision instrument readouts). */
+.livestats { display: flex; gap: 14px; }
+.stat-chip { display: flex; flex-direction: column; align-items: center; line-height: 1.15; }
+.stat-chip label {
+  font-size: calc(var(--ui-font-size) - 3px);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.stat-chip b {
+  font-variant-numeric: tabular-nums;
+  font-size: calc(var(--ui-font-size) + 2px);
+  color: var(--ui-accent);
+}
+
+.control-advanced {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ha-hairline);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.control-advanced > .ha-sparkle:first-child,
+.ha-divider-label {
+  align-self: center;
+}
+.control-advanced > :is(.ha-sparkle, .ha-divider-label) { display: inline-block; }
+.ha-divider-label {
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: calc(var(--ui-font-size) - 2px);
+  color: var(--ui-accent);
+  margin: 0 8px;
+}
+.advanced-grid { display: flex; gap: 24px; flex-wrap: wrap; }
+.advanced-note {
+  font-style: italic;
+  opacity: 0.55;
+  font-size: calc(var(--ui-font-size) - 1px);
+}
+
+/* The top-edge drag handle of the control bar. */
+.dock-resize.top {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -3px;
+  height: 7px;
+  width: auto;
+  cursor: row-resize;
+  z-index: 3;
+}
+.dock-resize.top:hover {
+  background: linear-gradient(180deg, transparent,
+    color-mix(in srgb, var(--ui-accent) 40%, transparent), transparent);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BOTANICAL MANUSCRIPT — the interface as a hand-painted illustrated page.
+   (UI-Graphic-Design "IMPORTANT REQUIREMENTS": ivory paper, warm-brown dip-pen
+   ink, watercolour washes, BOLD and immediately visible at normal zoom.)
+   These rules come last so they win over the earlier Heritage styling.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Warm paper grain + ink speckle over the whole workspace — deliberately
+   visible, not a microscopic overlay. */
+.app.ha-docked::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+  opacity: 0.16;
+  mix-blend-mode: multiply;
+  background-image: var(--ha-paper), var(--ha-paper);
+  background-size: 411px 411px, 263px 263px;
+  background-position: 0 0, 137px 199px;
+}
+
+/* Every panel is a sheet of aged paper with a wavy dip-pen ink border. */
+:root[data-ui-preset='Heritage Atlas'] .toolbar,
+:root[data-ui-preset='Heritage Atlas'] .editbar,
+:root[data-ui-preset='Heritage Atlas'] .inspector,
+:root[data-ui-preset='Heritage Atlas'] .analysis,
+:root[data-ui-preset='Heritage Atlas'] .design,
+:root[data-ui-preset='Heritage Atlas'] .tool-rail,
+:root[data-ui-preset='Heritage Atlas'] .right-dock,
+:root[data-ui-preset='Heritage Atlas'] .control-bar {
+  background-color: var(--ui-panel-bg);
+  /* Two paper washes at incommensurate tile sizes/offsets: their combined
+     period is effectively unbounded, so no repeating grain pattern shows. */
+  background-image: var(--ha-paper), var(--ha-paper);
+  background-size: 373px 373px, 227px 227px;
+  background-position: 0 0, 90px 130px;
+  border: 7px solid transparent;
+  border-image: var(--ha-ink-border) 24 stretch;   /* stretch = no tiled repeat */
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* The docked grid regions dropped their straight dividing borders in favour of
+   the inked border-image above; keep them snug. */
+:root[data-ui-preset='Heritage Atlas'] .tool-rail,
+:root[data-ui-preset='Heritage Atlas'] .right-dock,
+:root[data-ui-preset='Heritage Atlas'] .control-bar { border-inline-width: 7px; }
+
+/* Buttons: a small painted paper tile bordered in ink; hover deepens the
+   wash rather than adding a digital highlight. */
+:root[data-ui-preset='Heritage Atlas'] .toolbar button,
+:root[data-ui-preset='Heritage Atlas'] .editbar button,
+:root[data-ui-preset='Heritage Atlas'] .tool-rail button,
+:root[data-ui-preset='Heritage Atlas'] .inspector button,
+:root[data-ui-preset='Heritage Atlas'] .design button,
+:root[data-ui-preset='Heritage Atlas'] .control-bar button.brass {
+  background-color: var(--ui-button-bg);
+  background-image: var(--ha-paper), var(--ha-paper);
+  background-size: 149px 149px, 97px 97px;
+  background-position: 0 0, 33px 21px;
+  border: 7px solid transparent;
+  border-image: var(--ha-ink-border) 24 stretch;
+  border-radius: 0;
+  color: var(--ui-panel-text);
+}
+:root[data-ui-preset='Heritage Atlas'] .toolbar button:hover,
+:root[data-ui-preset='Heritage Atlas'] .editbar button:hover,
+:root[data-ui-preset='Heritage Atlas'] .tool-rail button:hover,
+:root[data-ui-preset='Heritage Atlas'] .inspector button:hover,
+:root[data-ui-preset='Heritage Atlas'] .design button:hover {
+  background-color: var(--ui-button-hover);
+}
+/* Active tool: a terracotta watercolour wash, still on paper. */
+:root[data-ui-preset='Heritage Atlas'] .editbar button.active,
+:root[data-ui-preset='Heritage Atlas'] .tool-rail button.active,
+:root[data-ui-preset='Heritage Atlas'] .toolbar button.active {
+  background-color: color-mix(in srgb, var(--ui-accent) 42%, var(--ui-button-bg));
+  color: #3a2414;
+}
+
+/* Section titles: painted terracotta manuscript capitals. */
+:root[data-ui-preset='Heritage Atlas'] .brand,
+:root[data-ui-preset='Heritage Atlas'] .analysis .section {
+  color: var(--ui-accent);
+  font-weight: 400;
+}
+:root[data-ui-preset='Heritage Atlas'] .brand {
+  font-size: calc(var(--ui-font-size) + 3px);
+}
+
+/* Cards read as framed plates cut from the same paper, inked all round. */
+:root[data-ui-preset='Heritage Atlas'] .analysis-card {
+  background: color-mix(in srgb, #ffffff 10%, transparent);
+  border: 7px solid transparent;
+  border-image: var(--ha-ink-border) 24 stretch;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Ink medallions for the tool icons, drawn on paper in warm brown. */
+:root[data-ui-preset='Heritage Atlas'] .editbar button .ha-ico,
+:root[data-ui-preset='Heritage Atlas'] .tool-rail button .ha-ico,
+:root[data-ui-preset='Heritage Atlas'] .toolbar button .ha-ico {
+  color: var(--ui-panel-text);
+  border: none;
+  padding: 2px;
+  background: none;
+  width: 20px;
+  height: 20px;
+}
+:root[data-ui-preset='Heritage Atlas'] .editbar button.active .ha-ico,
+:root[data-ui-preset='Heritage Atlas'] .tool-rail button.active .ha-ico,
+:root[data-ui-preset='Heritage Atlas'] .toolbar button.active .ha-ico {
+  color: #3a2414;
+  background: none;
+  border: none;
+}
+
+/* Chip / gauge numerals painted in terracotta ink. */
+:root[data-ui-preset='Heritage Atlas'] .stat-chip b,
+:root[data-ui-preset='Heritage Atlas'] .clock-read,
+:root[data-ui-preset='Heritage Atlas'] .ha-gauge-read {
+  color: var(--ui-accent);
+}
+
+/* The framing overlay (compass + botanical corners) sits above the paper. */
+.ha-frame { opacity: 0.9; }

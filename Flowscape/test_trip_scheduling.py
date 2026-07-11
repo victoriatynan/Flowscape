@@ -96,7 +96,7 @@ def _spawner(blocked=(), invalid=()):
 
 
 def test_drain_respects_capacity():
-    q = SpawnQueue(rate_per_sec=1000, token_cap=1000, max_wait_hours=10)
+    q = SpawnQueue(rate_per_sec=1000, token_cap=1000, max_wait_seconds=10)
     for i in range(5):
         q.enqueue(_trip(i), path=[i], now=0.0)
     spawned = q.drain(dt_seconds=1.0, free_slots=2, spawn=_spawner())
@@ -106,7 +106,7 @@ def test_drain_respects_capacity():
 
 
 def test_drain_respects_rate():
-    q = SpawnQueue(rate_per_sec=1.0, token_cap=1.0, max_wait_hours=10)
+    q = SpawnQueue(rate_per_sec=1.0, token_cap=1.0, max_wait_seconds=10)
     for i in range(5):
         q.enqueue(_trip(i), path=[i], now=0.0)
     # Half a token: nothing visible yet.
@@ -119,7 +119,7 @@ def test_drain_respects_rate():
 
 
 def test_blocked_is_retried_not_dropped():
-    q = SpawnQueue(rate_per_sec=1000, token_cap=1000, max_wait_hours=10)
+    q = SpawnQueue(rate_per_sec=1000, token_cap=1000, max_wait_seconds=10)
     for n in ("a", "b", "c"):
         q.enqueue(_trip(n), path=[n], now=0.0)
     spawned = q.drain(dt_seconds=1.0, free_slots=100, spawn=_spawner(blocked={"b"}))
@@ -132,7 +132,7 @@ def test_blocked_is_retried_not_dropped():
 
 
 def test_invalid_is_dropped():
-    q = SpawnQueue(rate_per_sec=1000, token_cap=1000, max_wait_hours=10)
+    q = SpawnQueue(rate_per_sec=1000, token_cap=1000, max_wait_seconds=10)
     for n in ("a", "b"):
         q.enqueue(_trip(n), path=[n], now=0.0)
     spawned = q.drain(dt_seconds=1.0, free_slots=100, spawn=_spawner(invalid={"a"}))
@@ -142,11 +142,11 @@ def test_invalid_is_dropped():
 
 
 def test_expire_bounds_backlog_without_crediting():
-    q = SpawnQueue(rate_per_sec=1000, token_cap=1000, max_wait_hours=1.0)
+    q = SpawnQueue(rate_per_sec=1000, token_cap=1000, max_wait_seconds=1.0)
     for i in range(3):
         q.enqueue(_trip(i), path=[i], now=0.0)
     assert q.expire(now=0.5) == []    # still within the wait window
-    expired = q.expire(now=2.0)       # all waited > 1.0h
+    expired = q.expire(now=2.0)       # all waited > 1.0s
     assert set(expired) == {0, 1, 2}
     assert q.depth == 0
     assert q.expired == 3             # tallied; occupancy is the caller's concern
@@ -154,7 +154,7 @@ def test_expire_bounds_backlog_without_crediting():
 
 
 def test_fifo_order_preserved_across_frames():
-    q = SpawnQueue(rate_per_sec=1000, token_cap=1000, max_wait_hours=10)
+    q = SpawnQueue(rate_per_sec=1000, token_cap=1000, max_wait_seconds=10)
     for i in range(3):
         q.enqueue(_trip(i), path=[i], now=0.0)
     assert q.drain(1.0, free_slots=1, spawn=_spawner()) == [0]

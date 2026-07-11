@@ -1,8 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { HeritageFrame, RadialGauge } from './HeritageIcons'
 
 // Read-only Map Analysis panel (EDITOR_IMPROVEMENT_PLAN.md): building mix,
 // exact deterministic day-0 demand, network totals, and connectivity
 // warnings, refreshed automatically whenever the map changes (geoVersion).
+//
+// Sections are collapsible "chapter cards" (Heritage Atlas brief). The
+// `heritage` flag adds the decorative framing overlay; the collapse behaviour
+// itself is preset-agnostic and harmless in every theme.
 
 export interface Analysis {
   buildings: {
@@ -25,7 +30,23 @@ export interface Analysis {
   warnings: string[]
 }
 
-export default function AnalysisPanel({ geoVersion }: { geoVersion: number }) {
+function Card({ title, warn, children }:
+              { title: string; warn?: boolean; children: ReactNode }) {
+  const [open, setOpen] = useState(true)
+  return (
+    <div className={`analysis-card${open ? '' : ' collapsed'}`}>
+      <button className={`section${warn ? ' warn' : ''}`}
+              aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <span>{title}</span>
+        <span className="chevron">{open ? '▾' : '▸'}</span>
+      </button>
+      {open && <div className="analysis-card-body">{children}</div>}
+    </div>
+  )
+}
+
+export default function AnalysisPanel({ geoVersion, heritage }:
+                       { geoVersion: number; heritage?: boolean }) {
   const [data, setData] = useState<Analysis | null>(null)
 
   useEffect(() => {
@@ -42,30 +63,41 @@ export default function AnalysisPanel({ geoVersion }: { geoVersion: number }) {
 
   return (
     <div className="analysis">
-      <div className="section">Buildings · {data.buildings.total}</div>
-      {cats.map(([cat, n]) => (
-        <div className="stat" key={cat}><span>{cat}</span><span>{n}</span></div>
-      ))}
-      <div className="stat"><span>Population</span><span>{data.buildings.population}</span></div>
-      <div className="stat"><span>Jobs</span><span>{data.buildings.jobs}</span></div>
+      {heritage && <HeritageFrame />}
+      <Card title={`Buildings · ${data.buildings.total}`}>
+        {cats.map(([cat, n]) => (
+          <div className="stat" key={cat}><span>{cat}</span><span>{n}</span></div>
+        ))}
+        <div className="stat"><span>Population</span><span>{data.buildings.population}</span></div>
+        <div className="stat"><span>Jobs</span><span>{data.buildings.jobs}</span></div>
+      </Card>
 
-      <div className="section">Daily demand (exact)</div>
-      <div className="stat"><span>Trips / day</span><span>{data.demand.daily_trips}</span></div>
-      <div className="stat"><span>Morning peak</span><span>{data.demand.morning_peak_trips}</span></div>
-      <div className="stat"><span>Evening peak</span><span>{data.demand.evening_peak_trips}</span></div>
+      <Card title="Daily demand (exact)">
+        <div className="stat"><span>Trips / day</span><span>{data.demand.daily_trips}</span></div>
+        <div className="stat"><span>Morning peak</span><span>{data.demand.morning_peak_trips}</span></div>
+        <div className="stat"><span>Evening peak</span><span>{data.demand.evening_peak_trips}</span></div>
+        {heritage && (
+          <div className="ha-gauge-row">
+            <RadialGauge label="AM peak" value={data.demand.morning_peak_trips}
+                         max={data.demand.daily_trips} />
+            <RadialGauge label="PM peak" value={data.demand.evening_peak_trips}
+                         max={data.demand.daily_trips} />
+          </div>
+        )}
+      </Card>
 
-      <div className="section">Network</div>
-      <div className="stat"><span>Roads</span><span>{data.network.roads}</span></div>
-      <div className="stat"><span>Intersections</span><span>{data.network.intersections}</span></div>
-      <div className="stat"><span>Lane miles</span><span>{data.network.lane_miles.toFixed(2)}</span></div>
+      <Card title="Network">
+        <div className="stat"><span>Roads</span><span>{data.network.roads}</span></div>
+        <div className="stat"><span>Intersections</span><span>{data.network.intersections}</span></div>
+        <div className="stat"><span>Lane miles</span><span>{data.network.lane_miles.toFixed(2)}</span></div>
+      </Card>
 
       {data.warnings.length > 0 && (
-        <>
-          <div className="section warn">Warnings</div>
+        <Card title="Warnings" warn>
           {data.warnings.map((w, i) => (
             <div className="warning" key={i}>{w}</div>
           ))}
-        </>
+        </Card>
       )}
     </div>
   )

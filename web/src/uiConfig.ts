@@ -27,6 +27,8 @@ export const FONT_FAMILIES: Record<string, string> = {
   'Humanist': 'Verdana, Geneva, sans-serif',
   'Display': '"Trebuchet MS", "Segoe UI", sans-serif',
   'Serif': 'Georgia, "Times New Roman", serif',
+  'Engraved': '"Bookman Old Style", "Palatino Linotype", Palatino, Georgia, serif',
+  'Atlas Antique': '"EB Garamond", "Cormorant Garamond", "Constantia", "Palatino Linotype", Georgia, serif',
   'Monospace': '"Cascadia Mono", Consolas, "Courier New", monospace',
 }
 
@@ -77,6 +79,29 @@ export const BUILT_IN_PRESETS: Record<string, Partial<UIConfig> & {
     radius: 12,
     theme: { 'button-border': '#392a1c' },
     outlineWidth: 0,
+  },
+  // Heritage Atlas (UI-Graphic-Design brief): a late-1800s engineering-atlas
+  // aesthetic — deep teal cloth binding, soft-parchment ink, antique brass.
+  // The palette lives here; App.css adds preset-scoped decorative craftsmanship
+  // (double-line frames, engraved uppercase headers, instrument-style numerals)
+  // gated on [data-ui-preset], so only the chrome changes — never behavior.
+  'Heritage Atlas': {
+    theme: {
+      'panel-bg': '#e9dcbb',      // aged ivory paper
+      'panel-text': '#40301e',    // warm dark-brown dip-pen ink
+      'accent': '#a8532c',        // painted terracotta / sienna
+      'button-bg': '#e0d0a6',     // deeper cream wash
+      'button-border': '#5a4632', // brown ink outline
+      'button-hover': '#d6c294',  // warmer wash
+      'danger': '#9c3a24',        // rust red
+      'warn': '#8a6a2c',          // ochre
+      'outline': '#5a4632',       // brown ink outline
+    },
+    fontFamily: 'Atlas Antique',  // old-style serif body; IM Fell headers via CSS
+    fontSize: 15,
+    panelOpacity: 0.98,
+    radius: 3,
+    outlineWidth: 2,
   },
 }
 
@@ -145,6 +170,9 @@ export function presetNames(): string[] {
 /** Push the config into the live UI (CSS custom properties on :root). */
 export function applyConfig(cfg: UIConfig) {
   const root = document.documentElement.style
+  // Expose the preset name so App.css can scope decorative craftsmanship
+  // (e.g. Heritage Atlas frames/headers) without affecting other presets.
+  document.documentElement.dataset.uiPreset = cfg.preset
   for (const [key, value] of Object.entries(cfg.theme)) {
     root.setProperty(`--ui-${key}`, value)
   }

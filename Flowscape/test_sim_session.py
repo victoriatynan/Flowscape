@@ -88,8 +88,10 @@ def test_matches_direct_harness_wiring():
         occupancy[bld.id] = bt.capacity if (bt and bt.category == RESIDENTIAL) else 0
 
     dt = session.tick_dt
+    real_time = 0.0   # mirrors SimulationSession.sim_real_time (real seconds)
     for i in range(TICKS):
         session.tick()
+        real_time += dt   # advance first, matching _step's order
 
         for v in traffic.cull_arrived():
             bid = v.dest_building_id
@@ -104,10 +106,10 @@ def test_matches_direct_harness_wiring():
             if path is None:
                 queue.dropped_no_path += 1
                 return
-            queue.enqueue(trip, path, scheduler.time)
+            queue.enqueue(trip, path, real_time)
         scheduler.update(dt, release)
 
-        queue.expire(scheduler.time)
+        queue.expire(real_time)
 
         free_slots = max(0, TRIPS_AT_ONCE_DEFAULT - len(traffic.vehicles))
 

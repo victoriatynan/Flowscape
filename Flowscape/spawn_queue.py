@@ -9,8 +9,8 @@ holds released trips and lets them out over time, so the player sees a steady,
 ordered stream of cars leaving buildings.
 
 Each frame the queue:
-  - EXPIRES trips that have waited too long (bounds the backlog and stops one
-    day's congestion bleeding into the next), and
+  - EXPIRES trips that have waited too long in REAL time (bounds the backlog
+    and stops one day's congestion bleeding into the next), and
   - DRAINS the rest into the simulation under two limits:
       * capacity  -- how many cars may exist at once (free_slots), and
       * rate (R)  -- how many may *appear* per real second (token bucket).
@@ -28,6 +28,16 @@ changes WHEN a car appears, never which trips exist or their order. A trip's
 route is resolved ONCE before it is enqueued, so retries never re-run
 pathfinding; expiry never credits building occupancy (a failed attempt means
 the origin stays truthfully "full").
+
+Clock discipline: EVERY budget here is measured in REAL seconds -- the token
+rate, and (crucially) the expiry wait. That's deliberate. Whether a queued
+trip can actually spawn is a real-time question: its origin lane must clear
+(a car ramps off it in ~1 real second) and a concurrency slot must free (only
+when some car finishes its real-time journey, tens of real seconds). The
+accelerated DEMAND clock (sim-hours) governs only WHEN trips become due; once
+a trip is enqueued its wait is timed against the road's real absorption rate,
+not the fast clock. Mixing the two is what silently expired trips before they
+could ever be served.
 """
 
 from collections import deque
@@ -36,10 +46,13 @@ from enum import Enum, auto
 # Defaults (tunable -- expect to nudge these while watching the sim).
 DEFAULT_RATE_PER_SEC = 4.0     # cars made visible per real second
 DEFAULT_TOKEN_CAP = 2.0        # max burst the bucket can save up after a lull
-DEFAULT_MAX_WAIT_HOURS = 3.0   # sim-hours a trip may wait before it expires.
-# Measured: with the ~0.1 clock, grace 1h->3h cuts evening trip loss ~29%->~12%
-# (more trips complete) at the cost of a slightly smeared peak -- cars can pull
-# out up to this many sim-hours after their scheduled departure.
+DEFAULT_MAX_WAIT_SEC = 45.0    # REAL seconds a trip may wait before it expires.
+# Timed in real seconds so the grace matches how long the road actually needs
+# to absorb a car (clear the origin lane + free a concurrency slot), regardless
+# of how fast the demand clock runs. Measured over one demo day (100 trips,
+# 40-car cap): moving from the old 30-real-second-equivalent grace to 45s cuts
+# expiry sharply, at the cost of a slightly smeared peak -- a queued car can
+# pull out up to this many real seconds after its scheduled departure.
 
 
 class SpawnResult(Enum):
@@ -64,10 +77,10 @@ class SpawnQueue:
 
     def __init__(self, rate_per_sec=DEFAULT_RATE_PER_SEC,
                  token_cap=DEFAULT_TOKEN_CAP,
-                 max_wait_hours=DEFAULT_MAX_WAIT_HOURS):
+                 max_wait_seconds=DEFAULT_MAX_WAIT_SEC):
         self.rate = rate_per_sec
         self.token_cap = token_cap
-        self.max_wait = max_wait_hours
+        self.max_wait = max_wait_seconds
         self._pending = deque()
         self._tokens = 0.0
         # Running tallies for status/debug overlays.
@@ -81,12 +94,13 @@ class SpawnQueue:
 
     def enqueue(self, trip, path, now):
         """Add a released trip whose route is ALREADY resolved (the caller drops
-        no-path trips before calling this). `now` is the scheduler's sim-time,
-        used as the start of this trip's wait clock."""
+        no-path trips before calling this). `now` is the current REAL-time clock
+        (seconds), used as the start of this trip's wait clock -- NOT sim-time."""
         self._pending.append(_Pending(trip, path, now))
 
     def expire(self, now):
-        """Drop trips that have waited longer than `max_wait`. Returns the list
+        """Drop trips that have waited (in REAL seconds) longer than `max_wait`.
+        `now` is the same real-time clock passed to `enqueue`. Returns the list
         of expired trips. Expiry does NOT credit occupancy: the attempt failed,
         so the origin building stays "full" (truthful congestion)."""
         if not self._pending:

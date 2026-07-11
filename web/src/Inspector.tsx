@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import * as api from './api'
+import { HeritageFrame } from './HeritageIcons'
 import type { ControlSchema, MapGeometry, RoadPresetsSchema } from './types'
 
 // Schema-driven property panel for the current selection — the browser
@@ -17,13 +18,14 @@ interface Props {
   geometry: MapGeometry
   controlSchema: ControlSchema | null
   roadPresets: RoadPresetsSchema | null
+  heritage?: boolean           // Heritage Atlas decorative frame
   onMutated: () => void        // refetch geometry (keeps selection)
   onDeleted: () => void        // refetch + clear selection
   onError: (message: string) => void
 }
 
 export default function Inspector({ selection, geometry, controlSchema,
-                                    roadPresets, onMutated, onDeleted,
+                                    roadPresets, heritage, onMutated, onDeleted,
                                     onError }: Props) {
   const [pendingControl, setPendingControl] = useState<string | null>(null)
   const [settings, setSettings] = useState<Record<string, number>>({})
@@ -139,6 +141,7 @@ export default function Inspector({ selection, geometry, controlSchema,
 
   return (
     <div className="inspector">
+      {heritage && <HeritageFrame />}
       {body}
       <div className="row">
         <button className="danger" onClick={del}>Delete {selection.kind}</button>

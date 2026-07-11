@@ -7,6 +7,9 @@ import Inspector, { type Selection } from './Inspector'
 import AnalysisPanel from './AnalysisPanel'
 import DesignPanel from './DesignPanel'
 import { drawScene, type EditorOverlay } from './renderer'
+import { Icon, HeritageDefs } from './HeritageIcons'
+import { inkBorderUri } from './heritageArt'
+import ControlBar from './ControlBar'
 import { type UIConfig, applyConfig, loadConfig } from './uiConfig'
 import { interpolateVehicles, useSimStream } from './useSimStream'
 import type { BuildingTypesSchema, ControlSchema, MapGeometry,
@@ -41,11 +44,22 @@ export default function App() {
   const [mapFiles, setMapFiles] = useState<string[]>([])
   const [showAnalysis, setShowAnalysis] = useState(false)
   const [showDesign, setShowDesign] = useState(false)
+  // Heritage Atlas docked layout: adjustable, collapsible, pinnable regions
+  // plus a resizable bottom simulation control bar.
+  const [leftW, setLeftW] = useState(60)
+  const [rightW, setRightW] = useState(272)
+  const [leftCollapsed, setLeftCollapsed] = useState(false)
+  const [rightCollapsed, setRightCollapsed] = useState(false)
+  const [leftPinned, setLeftPinned] = useState(false)
+  const [rightPinned, setRightPinned] = useState(false)
+  const [barH, setBarH] = useState(56)
+  const [barExpanded, setBarExpanded] = useState(false)
   const [uiConfig, setUiConfig] = useState<UIConfig>(() => {
     const cfg = loadConfig()
     applyConfig(cfg)          // saved default (or dev default) at startup
     return cfg
   })
+  const heritage = uiConfig.preset === 'Heritage Atlas'
   const [mapLabel, setMapLabel] = useState('empty map')
   const [error, setError] = useState<string | null>(null)
   const { stream, meta, connected } = useSimStream()
@@ -123,14 +137,38 @@ export default function App() {
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
           drawScene(ctx, w, h, cameraRef.current, geometryRef.current,
             interpolateVehicles(stream.current, performance.now()),
-            categories(), overlayRef.current)
+            categories(), overlayRef.current, heritage)
         }
       }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [stream, buildingTypes])
+  }, [stream, buildingTypes, heritage])
+
+  // Boil the whole hand-inked chrome on one slow timer (~3x/sec): step the
+  // shared SVG filter seeds (icons, compass, corners, gauges, sparkles) and the
+  // panel/button border-image seed together, so the UI outlines re-draw in step
+  // with the map. Re-rendering happens only when a seed changes (not per frame),
+  // so it stays cheap. Runs only while Heritage is active and the tab is visible.
+  useEffect(() => {
+    if (!heritage) return
+    const seeds = [5, 14, 26, 33, 41, 19]
+    let i = 0
+    const root = document.documentElement
+    const id = window.setInterval(() => {
+      if (document.hidden) return
+      i = (i + 1) % seeds.length
+      const s = seeds[i]
+      document.querySelector('#ha-ink feTurbulence')?.setAttribute('seed', String(s))
+      document.querySelector('#ha-water feTurbulence')?.setAttribute('seed', String(s + 3))
+      root.style.setProperty('--ha-ink-border', inkBorderUri(s))
+    }, 320)
+    return () => {
+      window.clearInterval(id)
+      root.style.removeProperty('--ha-ink-border')
+    }
+  }, [heritage])
 
   const runEdit = useCallback((fn: () => Promise<unknown>, fit = false) => {
     setError(null)
@@ -298,8 +336,113 @@ export default function App() {
     ['select', 'Select'], ['node', 'Node'], ['road', 'Road'], ['building', 'Building'],
   ]
 
+  // Drag-to-resize a docked side region. Window-level listeners so the drag
+  // keeps tracking even when the pointer leaves the thin handle.
+  const startResize = (side: 'left' | 'right') => (e: React.PointerEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const from = side === 'left' ? leftW : rightW
+    const move = (ev: PointerEvent) => {
+      const d = ev.clientX - startX
+      if (side === 'left') setLeftW(Math.max(48, Math.min(180, from + d)))
+      else setRightW(Math.max(210, Math.min(460, from - d)))
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  // Drag the control bar's top edge to grow/shrink its height.
+  const startResizeBar = (e: React.PointerEvent) => {
+    e.preventDefault()
+    const startY = e.clientY
+    const from = barH
+    const move = (ev: PointerEvent) =>
+      setBarH(Math.max(44, Math.min(280, from - (ev.clientY - startY))))
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  // Editing controls shared by the horizontal editbar (default presets) and the
+  // vertical Heritage tool rail; orientation and labels are handled in CSS.
+  const editControls = (
+    <>
+      {tools.map(([t, label]) => (
+        <button key={t} className={tool === t ? 'active' : ''} title={label}
+                onClick={() => { setTool(t); setRoadAnchorId(null) }}>
+          {heritage && <Icon name={t} />}<span>{label}</span>
+        </button>
+      ))}
+      {tool === 'building' && (
+        <select value={buildingType}
+                onChange={(e) => setBuildingType(e.target.value)}>
+          {(buildingTypes?.order ?? []).map((name) => (
+            <option key={name} value={name}>{name}</option>
+          ))}
+        </select>
+      )}
+      <button onClick={() => runEdit(api.undo)} title="Undo">
+        {heritage ? <Icon name="undo" /> : '↶'}<span>Undo</span></button>
+      <button onClick={() => runEdit(api.redo)} title="Redo">
+        {heritage ? <Icon name="redo" /> : '↷'}<span>Redo</span></button>
+      {/* Default presets toggle a floating analysis panel; Heritage Atlas
+          docks it permanently, so no toggle there. */}
+      {!heritage && (
+        <button className={showAnalysis ? 'active' : ''} title="Analysis"
+                onClick={() => setShowAnalysis((v) => !v)}>
+          <span>Analysis</span></button>
+      )}
+      {tool === 'road' && (
+        <span className="hint">
+          {roadAnchorId == null ? 'click the first node' : 'click the second node'}
+        </span>
+      )}
+    </>
+  )
+
+  const inspectorPanel = !showDesign && selection && geometryRef.current && (
+    <Inspector
+      key={`${selection.kind}-${selection.id}-${geoVersion}`}
+      selection={selection}
+      heritage={heritage}
+      geometry={geometryRef.current}
+      controlSchema={controlSchema}
+      roadPresets={roadPresets}
+      onMutated={() => refreshGeometry(false).catch((e) => setError(String(e)))}
+      onDeleted={() => {
+        setSelection(null)
+        refreshGeometry(false).catch((e) => setError(String(e)))
+      }}
+      onError={setError}
+    />
+  )
+  // Heritage docks analysis permanently (no show/hide toggle); default presets
+  // show it only when toggled.
+  const analysisEl = <AnalysisPanel geoVersion={geoVersion} heritage={heritage} />
+  const designPanel = showDesign && (
+    <DesignPanel config={uiConfig} onChange={setUiConfig} />
+  )
+
+  // Grid template drives the docked layout; collapsed regions shrink to zero
+  // and a floating tab offers to re-open them. The bottom control bar occupies
+  // its own row whose height the user can drag.
+  const barEff = barExpanded ? Math.max(barH, 150) : barH
+  const dockedStyle = heritage
+    ? ({ '--ha-left': `${leftCollapsed ? 0 : leftW}px`,
+         '--ha-right': `${rightCollapsed ? 0 : rightW}px`,
+         '--ha-bar': `${barEff}px` } as React.CSSProperties)
+    : undefined
+
   return (
-    <div className="app">
+    <div className={`app${heritage ? ' ha-docked' : ''}`} style={dockedStyle}>
+      {heritage && <HeritageDefs />}
       <canvas
         ref={canvasRef}
         className="world"
@@ -318,63 +461,95 @@ export default function App() {
           <option value="">Load…</option>
           {mapFiles.map((f) => <option key={f} value={f}>{f}</option>)}
         </select>
-        {!running && <button onClick={() => runEdit(api.simStart)}>▶ Start</button>}
-        {running && !paused && <button onClick={() => runEdit(api.simPause)}>⏸ Pause</button>}
-        {running && paused && <button onClick={() => runEdit(api.simResume)}>▶ Resume</button>}
-        {running && <button onClick={() => runEdit(api.simStop)}>■ Stop</button>}
-        <span className="status">
-          {running
-            ? `${meta.day_name} (Day ${meta.day}) ${meta.clock} · cars: ` +
-              `${meta.vehicles?.length ?? 0} · queue: ${meta.queue_depth ?? 0}`
-            : 'sim stopped'}
-        </span>
-        <span className="status dim">{mapLabel}</span>
-        <button className={showDesign ? 'active' : ''} title="UI design"
-                onClick={() => setShowDesign((v) => !v)}>🎨</button>
-        <span className={connected ? 'dot ok' : 'dot bad'} title="backend link" />
-      </div>
-      <div className="editbar">
-        {tools.map(([t, label]) => (
-          <button key={t} className={tool === t ? 'active' : ''}
-                  onClick={() => { setTool(t); setRoadAnchorId(null) }}>
-            {label}
-          </button>
-        ))}
-        {tool === 'building' && (
-          <select value={buildingType}
-                  onChange={(e) => setBuildingType(e.target.value)}>
-            {(buildingTypes?.order ?? []).map((name) => (
-              <option key={name} value={name}>{name}</option>
-            ))}
-          </select>
-        )}
-        <button onClick={() => runEdit(api.undo)}>↶ Undo</button>
-        <button onClick={() => runEdit(api.redo)}>↷ Redo</button>
-        <button className={showAnalysis ? 'active' : ''}
-                onClick={() => setShowAnalysis((v) => !v)}>Analysis</button>
-        {tool === 'road' && (
-          <span className="hint">
-            {roadAnchorId == null ? 'click the first node' : 'click the second node'}
+        {/* In Heritage Atlas playback + live stats live in the bottom bar. */}
+        {!heritage && !running && <button onClick={() => runEdit(api.simStart)}>▶ Start</button>}
+        {!heritage && running && !paused && <button onClick={() => runEdit(api.simPause)}>⏸ Pause</button>}
+        {!heritage && running && paused && <button onClick={() => runEdit(api.simResume)}>▶ Resume</button>}
+        {!heritage && running && <button onClick={() => runEdit(api.simStop)}>■ Stop</button>}
+        {!heritage && (
+          <span className="status">
+            {running
+              ? `${meta.day_name} (Day ${meta.day}) ${meta.clock} · cars: ` +
+                `${meta.vehicles?.length ?? 0} · queue: ${meta.queue_depth ?? 0}`
+              : 'sim stopped'}
           </span>
         )}
+        <span className="status dim">{mapLabel}</span>
+        <button className={showDesign ? 'active' : ''} title="UI design"
+                onClick={() => setShowDesign((v) => !v)}>
+          {heritage ? <Icon name="design" /> : '🎨'}</button>
+        <span className={connected ? 'dot ok' : 'dot bad'} title="backend link" />
       </div>
-      {showAnalysis && <AnalysisPanel geoVersion={geoVersion} />}
-      {showDesign && <DesignPanel config={uiConfig} onChange={setUiConfig} />}
-      {!showDesign && selection && geometryRef.current && (
-        <Inspector
-          key={`${selection.kind}-${selection.id}-${geoVersion}`}
-          selection={selection}
-          geometry={geometryRef.current}
-          controlSchema={controlSchema}
-          roadPresets={roadPresets}
-          onMutated={() => refreshGeometry(false).catch((e) => setError(String(e)))}
-          onDeleted={() => {
-            setSelection(null)
-            refreshGeometry(false).catch((e) => setError(String(e)))
-          }}
-          onError={setError}
-        />
+
+      {heritage ? (
+        <>
+          {/* Left tool rail (docked, icon-first). */}
+          {!leftCollapsed && (
+            <aside className="tool-rail">
+              {editControls}
+              <div className="rail-foot">
+                <button className="dock-pin" aria-pressed={leftPinned}
+                        title={leftPinned ? 'Unpin tools' : 'Pin tools open'}
+                        onClick={() => setLeftPinned((p) => !p)}>
+                  {leftPinned ? '★' : '☆'}</button>
+                {!leftPinned && (
+                  <button className="dock-collapse" title="Collapse tools"
+                          onClick={() => setLeftCollapsed(true)}>‹</button>
+                )}
+              </div>
+              <div className="dock-resize left" onPointerDown={startResize('left')} />
+            </aside>
+          )}
+          {leftCollapsed && (
+            <button className="dock-tab left" title="Show tools"
+                    onClick={() => setLeftCollapsed(false)}>›</button>
+          )}
+
+          {/* Right analysis & inspector dock (docked, scrollable). */}
+          {!rightCollapsed && (
+            <aside className="right-dock">
+              <div className="dock-head">
+                <button className="dock-pin" aria-pressed={rightPinned}
+                        title={rightPinned ? 'Unpin panel' : 'Pin panel open'}
+                        onClick={() => setRightPinned((p) => !p)}>
+                  {rightPinned ? '★' : '☆'}</button>
+                {!rightPinned && (
+                  <button className="dock-collapse" title="Collapse panel"
+                          onClick={() => setRightCollapsed(true)}>›</button>
+                )}
+              </div>
+              {designPanel}
+              {inspectorPanel}
+              {analysisEl}
+              <div className="dock-resize right" onPointerDown={startResize('right')} />
+            </aside>
+          )}
+          {rightCollapsed && (
+            <button className="dock-tab right" title="Show panel"
+                    onClick={() => setRightCollapsed(false)}>‹</button>
+          )}
+
+          {/* Bottom simulation control bar (resizable height). */}
+          <ControlBar
+            meta={meta}
+            expanded={barExpanded}
+            onToggleExpand={() => setBarExpanded((v) => !v)}
+            onResizeStart={startResizeBar}
+            onStart={() => runEdit(api.simStart)}
+            onPause={() => runEdit(api.simPause)}
+            onResume={() => runEdit(api.simResume)}
+            onStop={() => runEdit(api.simStop)}
+          />
+        </>
+      ) : (
+        <>
+          <div className="editbar">{editControls}</div>
+          {showAnalysis && analysisEl}
+          {designPanel}
+          {inspectorPanel}
+        </>
       )}
+
       {error && <div className="error" onClick={() => setError(null)}>{error}</div>}
     </div>
   )
