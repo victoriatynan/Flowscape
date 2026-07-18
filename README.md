@@ -66,3 +66,4 @@ The geometry diagnostics (`check_fillet_direction.py`, `check_taper.py`) sweep t
 - **[WEB_MIGRATION_PLAN.md](WEB_MIGRATION_PLAN.md)** — the completed migration to the browser, phase by phase, with the architectural invariants the codebase follows.
 - **[EDITOR_IMPROVEMENT_PLAN.md](EDITOR_IMPROVEMENT_PLAN.md)** — editor workflow improvements (continuous road drawing, real lane markings, the Map Analysis panel).
 - **[UI_PLAN.md](UI_PLAN.md)** — the UI theme/configuration system (design panel, presets, saved defaults).
+- **[SIMULATION_PLAN.md](SIMULATION_PLAN.md)** — forward roadmap: taking the simulation from watchable demo to a validated traffic-engineering tool (unified clock, physics validation, metrics, scale).

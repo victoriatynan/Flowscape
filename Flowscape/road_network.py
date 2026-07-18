@@ -18,6 +18,14 @@ from intersection_control import CONTROL_YIELD
 
 NODE_HIT_RADIUS = 12
 
+# Two roads of DIFFERENT width meeting at a single node may not fold below
+# this inner angle. A sharp fold with mismatched mouths is the one case the
+# continuation surface builder can't render without self-intersecting into a
+# bowtie (road_geometry._build_continuation_polygon), so the editor keeps such
+# a pair near-straight -- comfortably inside the width-taper regime -- instead.
+# Equal-width folds are unaffected (they fan cleanly at any angle).
+FOLD_MIN_ANGLE_DEG = 120.0
+
 # Footprint side length (feet) by BuildingType.size; drawing and hit-testing
 # both derive the square from this single table.
 BUILDING_SIZE_FT = {SMALL: 30.0, MEDIUM: 55.0, LARGE: 80.0}
@@ -116,6 +124,45 @@ class RoadNetwork:
             other = end if origin is start else start
             tangent = _normalize2(other[0] - origin[0], other[1] - origin[1])
         return tangent
+
+    def neighbor_node_ids(self, node_id):
+        """Ids of the nodes joined to `node_id` by a road (the other end of
+        each road touching it). Moving `node_id` changes the tangent each of
+        those roads presents at its FAR node too, so they are exactly the
+        extra nodes a move can push across the fold limit."""
+        out = []
+        for road in self.roads_for_node(node_id):
+            other = (road.end_node_id if road.start_node_id == node_id
+                     else road.start_node_id)
+            if other != node_id and other not in out:
+                out.append(other)
+        return out
+
+    def violates_fold_limit(self, node_id):
+        """True when `node_id` joins exactly two non-preview roads whose total
+        widths differ AND whose inner angle is below FOLD_MIN_ANGLE_DEG -- the
+        mismatched sharp fold the surface builder can't tessellate cleanly.
+        Equal-width folds and 1-/3+-road nodes are always False."""
+        roads = [r for r in self.roads_for_node(node_id) if not r.is_preview]
+        if len(roads) != 2:
+            return False
+        w0 = get_road_profile(roads[0]).total_width()
+        w1 = get_road_profile(roads[1]).total_width()
+        if abs(w0 - w1) <= 1e-6:
+            return False
+        a = self.outward_tangent_at_node(roads[0], node_id)
+        b = self.outward_tangent_at_node(roads[1], node_id)
+        dot = a[0] * b[0] + a[1] * b[1]
+        # Inner angle = acos(dot) (outward tangents oppose -> ~180 = straight,
+        # align -> ~0 = hairpin). Below the limit means dot above its cosine.
+        return dot > math.cos(math.radians(FOLD_MIN_ANGLE_DEG))
+
+    def fold_limit_offenders(self, node_ids):
+        """Which of `node_ids` currently violate the fold limit. The edit
+        endpoints apply a change, call this on the affected nodes, and refuse
+        the edit if it introduces any offender."""
+        return [nid for nid in dict.fromkeys(node_ids)
+                if nid in self.nodes and self.violates_fold_limit(nid)]
 
     # Width-transition (taper) tuning for 2-road continuation nodes joining
     # roads of different widths: the NARROWER road is trimmed back by a

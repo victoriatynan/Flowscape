@@ -22,3 +22,6 @@ archive/
 
 # Per-machine Claude Code settings
 .claude/settings.local.json
+
+# Planning docs (kept local, not committed) — e.g. *_PLAN.md
+*PLAN.md

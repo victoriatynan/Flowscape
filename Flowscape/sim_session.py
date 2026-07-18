@@ -269,4 +269,9 @@ class SimulationSession:
             "expired": self.spawn_queue.expired,
             "dropped_no_path": self.spawn_queue.dropped_no_path,
             "occupancy": dict(self.building_occupancy),
+            # Clock mode, so a client can distinguish the fast decoupled preview
+            # from the unified "real simulator" and show its compute cost.
+            "unified": self.unified,
+            "time_scale": self.time_scale,
+            "substeps": self.last_substeps,
         }

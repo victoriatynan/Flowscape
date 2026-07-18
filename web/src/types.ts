@@ -13,6 +13,8 @@ export interface GeometryNode {
 
 export interface GeometryRoad {
   id: number
+  start_node_id: number
+  end_node_id: number
   centerline: Pt[]
   control_point: Pt
   profile_data: { preset?: string; lane_count_forward?: number;
@@ -94,6 +96,10 @@ export interface SimSnapshot {
   queue_depth?: number
   released?: number
   occupancy?: Record<string, number>
+  // Clock mode (unified "real simulator" vs decoupled preview) + compute cost.
+  unified?: boolean
+  time_scale?: number
+  substeps?: number
 }
 
 export interface FieldSpec {

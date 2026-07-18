@@ -13,11 +13,17 @@ interface Props {
   expanded: boolean
   onToggleExpand: () => void
   onResizeStart: (e: React.PointerEvent) => void
+  unified: boolean
+  timeScale: number
+  onUnifiedChange: (v: boolean) => void
+  onTimeScaleChange: (v: number) => void
   onStart: () => void
   onPause: () => void
   onResume: () => void
   onStop: () => void
 }
+
+const TIME_SCALES = [1, 8, 60, 360]
 
 // "HH:MM" → fraction of a 24h day (defensive: unknown clock ⇒ 0).
 function dayFraction(clock?: string): number {
@@ -60,7 +66,8 @@ function RulerTimeline({ frac }: { frac: number }) {
 }
 
 export default function ControlBar({ meta, expanded, onToggleExpand,
-    onResizeStart, onStart, onPause, onResume, onStop }: Props) {
+    onResizeStart, unified, timeScale, onUnifiedChange, onTimeScaleChange,
+    onStart, onPause, onResume, onStop }: Props) {
   const running = meta.running
   const paused = meta.paused ?? false
   const frac = dayFraction(meta.clock)
@@ -87,6 +94,25 @@ export default function ControlBar({ meta, expanded, onToggleExpand,
           {running && (
             <button className="brass" title="Stop" onClick={onStop}>
               <Icon name="stop" /></button>
+          )}
+          {!running && (
+            <div className="sim-mode-cluster">
+              <select className="ha-select sim-mode" value={unified ? 'sim' : 'preview'}
+                      title="Simulation clock" onChange={(e) =>
+                        onUnifiedChange(e.target.value === 'sim')}>
+                <option value="preview">Preview (fast)</option>
+                <option value="sim">Simulate (accurate)</option>
+              </select>
+              {unified && (
+                <select className="ha-select sim-speed" value={timeScale}
+                        title="Sim speed (× real time)" onChange={(e) =>
+                          onTimeScaleChange(Number(e.target.value))}>
+                  {TIME_SCALES.map((s) => (
+                    <option key={s} value={s}>{s}×</option>
+                  ))}
+                </select>
+              )}
+            </div>
           )}
         </div>
 
@@ -123,6 +149,12 @@ export default function ControlBar({ meta, expanded, onToggleExpand,
               <b>{running ? (paused ? 'paused' : 'running') : 'stopped'}</b></span>
             <span className="stat-chip"><label>Tick</label>
               <b>{meta.tick ?? 0}</b></span>
+            <span className="stat-chip"><label>Clock</label>
+              <b>{meta.unified ? `${meta.time_scale ?? 0}× sim` : 'preview'}</b></span>
+            {meta.unified && (
+              <span className="stat-chip"><label>Substeps</label>
+                <b>{meta.substeps ?? 1}</b></span>
+            )}
           </div>
           <div className="advanced-note">
             Scenario, recording &amp; camera tools — reserved.

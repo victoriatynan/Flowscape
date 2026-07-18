@@ -25,7 +25,15 @@ export const fetchControlSchema = () =>
   req<ControlSchema>('/api/schema/intersection-control')
 
 export const loadTestCity = () => post('/api/map/test-city')
-export const simStart = () => post('/api/sim/start', {})
+
+// Sim start options. Default (no args) = the fast decoupled preview. Pass
+// { unified: true, time_scale } for the accurate single-clock "real simulator":
+// one clock drives motion/demand/expiry, physics sub-steps to stay stable.
+export interface SimStartOpts {
+  unified?: boolean
+  time_scale?: number
+}
+export const simStart = (opts: SimStartOpts = {}) => post('/api/sim/start', opts)
 export const simPause = () => post('/api/sim/pause')
 export const simResume = () => post('/api/sim/resume')
 export const simStop = () => post('/api/sim/stop')

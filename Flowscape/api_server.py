@@ -36,7 +36,7 @@ from intersection_control import (CONTROL_TYPE_ORDER, CONTROL_TYPE_LABELS,
 from map_data import (MAPS_DIR, MAP_FILE_EXTENSION, map_to_dict,
                       load_map_dict, save_map, load_map, validate_network)
 from road_geometry import build_node_surfaces, compute_road_polygon
-from road_network import RoadNetwork, BUILDING_SIZE_FT
+from road_network import RoadNetwork, BUILDING_SIZE_FT, FOLD_MIN_ANGLE_DEG
 from road_style import (get_road_profile, offset_polyline, ROAD_PROFILE_PRESETS,
                         ROAD_MARK_RATIO, profile_markings, marking_segments,
                         SHOULDER_NONE, SHOULDER_COLORS)
@@ -93,6 +93,28 @@ class WorldState:
         return sim_was_running
 
 
+def _guard_fold_limit(net, affected_node_ids, apply_change, revert_change):
+    """Enforce the mismatched-width fold limit around a pending edit.
+
+    `apply_change`/`revert_change` mutate the network in place (position,
+    curve, profile, an added road). We apply the change, ask the network
+    which of `affected_node_ids` now violate the limit, always revert, and
+    raise HTTP 400 if any did -- so the offending state is never committed
+    and the real edit still runs through the undo system afterward. Returns
+    nothing; raises HTTPException on violation."""
+    apply_change()
+    try:
+        offenders = net.fold_limit_offenders(affected_node_ids)
+    finally:
+        revert_change()
+    if offenders:
+        raise HTTPException(
+            400,
+            "that would fold two roads of different widths too sharply "
+            f"(nodes {offenders}); keep the bend within "
+            f"{int(FOLD_MIN_ANGLE_DEG)} degrees of straight.")
+
+
 # ----------------------------------------------------------------------
 # Request bodies
 # ----------------------------------------------------------------------
@@ -146,6 +168,12 @@ class SimStartIn(BaseModel):
     hours_per_second: float | None = None
     max_vehicles: int | None = None
     trip_limit: int | None = None
+    # Unified single-clock mode (the "real simulator"): one clock drives motion,
+    # demand, and expiry together, with sub-stepped physics. `time_scale` is
+    # sim-seconds per real second; unset falls back to the session default. In
+    # unified mode `hours_per_second` is derived from `time_scale` and ignored.
+    unified: bool = False
+    time_scale: float | None = Field(None, ge=1.0, le=360.0)
 
 
 class TickIn(BaseModel):
@@ -309,6 +337,8 @@ def create_app(world=None):
                         markings.append({"points": segment, "color": color})
             roads.append({
                 "id": road.id,
+                "start_node_id": road.start_node_id,
+                "end_node_id": road.end_node_id,
                 "centerline": centerline,
                 "control_point": geo["control_point"],
                 "profile_data": dict((road.data or {}).get("profile") or {}),
@@ -380,7 +410,8 @@ def create_app(world=None):
 
     @app.post("/api/edit/node/{node_id}/move")
     def move_node(node_id: int, body: MoveNodeIn):
-        node = world.network.nodes.get(node_id)
+        net = world.network
+        node = net.nodes.get(node_id)
         if node is None:
             raise HTTPException(404, f"no node {node_id}")
         before = (node.x, node.y)
@@ -389,6 +420,11 @@ def create_app(world=None):
         def write(state):
             node.x, node.y = state
 
+        # Moving a node changes the tangent it presents AND the tangent each
+        # of its roads presents at the far end, so both it and its neighbors
+        # can be pushed across the fold limit.
+        _guard_fold_limit(net, [node_id] + net.neighbor_node_ids(node_id),
+                          lambda: write(after), lambda: write(before))
         world.apply(lambda: write(after), lambda: write(before))
         return {"ok": True}
 
@@ -475,6 +511,20 @@ def create_app(world=None):
                             curve_offset=tuple(body.curve_offset))
         rid = road.id
 
+        # add_road/add_node already made the road live, so the network is in
+        # its post-edit state -- validate both endpoints and roll back if the
+        # new road would fold a width-mismatched pair too sharply.
+        offenders = net.fold_limit_offenders([body.start_node_id, end_id])
+        if offenders:
+            net.roads.pop(rid, None)
+            if end_node is not None:
+                net.nodes.pop(end_node.id, None)
+            raise HTTPException(
+                400,
+                "that road would fold two roads of different widths too "
+                f"sharply (nodes {offenders}); keep the bend within "
+                f"{int(FOLD_MIN_ANGLE_DEG)} degrees of straight.")
+
         def do():
             if end_node is not None:
                 net.nodes[end_node.id] = end_node
@@ -512,6 +562,10 @@ def create_app(world=None):
             net.set_curve_offset_from_control_point(
                 road, (body.control_x, body.control_y))
 
+        # Bending the road swings its outward tangent at BOTH ends, so either
+        # endpoint could cross the fold limit against its neighbouring road.
+        _guard_fold_limit(net, [road.start_node_id, road.end_node_id],
+                          do, lambda: write(before))
         world.apply(do, lambda: write(before))
         return {"ok": True, "curve_offset": list(road.curve_offset)}
 
@@ -540,6 +594,11 @@ def create_app(world=None):
         def write(state):
             road.data = dict(state)
 
+        # Widening/narrowing this road can turn an already-sharp equal-width
+        # bend at either end into the mismatched fold the builder can't draw,
+        # so the profile change is held to the same limit.
+        _guard_fold_limit(net, [road.start_node_id, road.end_node_id],
+                          lambda: write(after), lambda: write(before))
         world.apply(lambda: write(after), lambda: write(before))
         return {"ok": True, "profile": profile}
 
@@ -654,6 +713,10 @@ def create_app(world=None):
             kwargs["max_vehicles"] = body.max_vehicles
         if body.trip_limit is not None:
             kwargs["trip_limit"] = body.trip_limit
+        if body.unified:
+            kwargs["unified"] = True
+        if body.time_scale is not None:
+            kwargs["time_scale"] = body.time_scale
         try:
             world.session = SimulationSession(world.network, **kwargs)
         except ValueError as e:

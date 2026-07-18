@@ -251,6 +251,42 @@ def test_sim_start_requires_buildings():
     print("ok: starting the sim on a building-less map is a 400")
 
 
+def test_sim_start_unified_mode():
+    """The unified single-clock 'real simulator' is reachable from the API and
+    round-trips: one clock drives everything, physics sub-steps, and the mode
+    is reported in the snapshot. It must also stay deterministic against a
+    direct unified SimulationSession (same map, same ticks)."""
+    import math
+
+    client, world = _client(create_test_city())
+    with client:
+        # Default start is the decoupled preview: not unified, one sub-step.
+        client.post("/api/sim/start", json={"paused": True})
+        decoupled = client.post("/api/sim/tick", json={"ticks": 60}).json()
+        assert decoupled["unified"] is False and decoupled["substeps"] == 1
+
+        # Opt into unified with an explicit time_scale; physics sub-steps to
+        # ceil(time_scale) per tick and the clock mode is reported back.
+        started = client.post("/api/sim/start",
+                              json={"paused": True, "unified": True,
+                                    "time_scale": 16})
+        assert started.status_code == 200
+        api_snap = client.post("/api/sim/tick", json={"ticks": 600}).json()
+        assert api_snap["unified"] is True
+        assert api_snap["time_scale"] == 16.0
+        assert api_snap["substeps"] == math.ceil(16)
+
+        # Out-of-range time_scale is a validation error, not a silent clamp.
+        assert client.post("/api/sim/start",
+                           json={"unified": True, "time_scale": 999}
+                           ).status_code == 422
+
+    direct = SimulationSession(create_test_city(), unified=True, time_scale=16)
+    direct.run(600)
+    assert api_snap == _jsonable(direct.snapshot())
+    print("ok: unified single-clock mode starts via API and matches a direct session")
+
+
 def test_schemas_and_control_validation():
     client, world = _client()
     with client:
@@ -401,6 +437,104 @@ def test_websocket_streams_state():
     print("ok: websocket streams the current snapshot on connect")
 
 
+def test_fold_limit_predicate():
+    """RoadNetwork.violates_fold_limit fires only for a 2-road node whose
+    roads differ in width AND fold below FOLD_MIN_ANGLE_DEG."""
+    from road_network import RoadNetwork, FOLD_MIN_ANGLE_DEG
+
+    net = RoadNetwork()
+    n = net.add_node(0, 0)
+    a = net.add_node(300, 30)      # both arms leave toward +x => sharp fold
+    b = net.add_node(300, -30)
+    net.add_road(n.id, a.id)
+    r2 = net.add_road(n.id, b.id)
+
+    # Equal width (both default urban): a sharp fold is fine, it fans cleanly.
+    assert not net.violates_fold_limit(n.id)
+
+    # Mismatched width at the same sharp angle: now it's the bad case.
+    r2.data["profile"] = {"preset": "highway"}
+    assert net.violates_fold_limit(n.id)
+    assert net.fold_limit_offenders([n.id, a.id, b.id]) == [n.id]
+
+    # Straighten the pair (arms roughly opposed) and it clears again.
+    b.x, b.y = -300, 0
+    assert not net.violates_fold_limit(n.id)
+
+    # A lone road (1-road node) is never constrained.
+    assert not net.violates_fold_limit(a.id)
+    assert FOLD_MIN_ANGLE_DEG == 120.0
+    print("ok: fold-limit predicate matches width + angle")
+
+
+def test_fold_limit_blocks_sharp_mismatched_edits():
+    """Every edit path that could fold a width-mismatched pair too sharply is
+    refused (HTTP 400) and leaves the network untouched; the near-straight and
+    equal-width equivalents still succeed."""
+    client, world = _client()
+    net = world.network
+    with client:
+        def node(x, y):
+            return client.post("/api/edit/node",
+                               json={"x": x, "y": y}).json()["node"]["id"]
+
+        def road(s, e):
+            return client.post("/api/edit/road",
+                               json={"start_node_id": s, "end_node_id": e})
+
+        # --- move_node guard -------------------------------------------------
+        # Straight mismatched line A(-300,0)-N(0,0)-B(300,0): highway + urban.
+        a = node(-300, 0); n = node(0, 0); b = node(300, 0)
+        r1 = road(a, n).json()["road"]["id"]
+        road(n, b)
+        client.post(f"/api/edit/road/{r1}/profile", json={"preset": "highway"})
+        assert not net.violates_fold_limit(n)          # straight => allowed
+
+        # Dragging N far to one side folds both arms toward +y/-y sharply.
+        bad = client.post(f"/api/edit/node/{n}/move", json={"x": 0, "y": 400})
+        assert bad.status_code == 400
+        assert net.nodes[n].pos == (0, 0)              # move rolled back
+        # A gentle nudge that stays near-straight is fine.
+        ok = client.post(f"/api/edit/node/{n}/move", json={"x": 0, "y": 40})
+        assert ok.status_code == 200
+
+        # --- create_road guard ----------------------------------------------
+        # A wide highway stub, then a narrow arm folding back sharply from its
+        # shared node is rejected; the same arm the other (straight) way is ok.
+        c = node(1000, 0); d = node(1300, 30); e = node(1300, -30)
+        rc = road(c, d).json()["road"]["id"]
+        client.post(f"/api/edit/road/{rc}/profile", json={"preset": "highway"})
+        roads_before = set(net.roads)
+        blocked = road(c, e)                            # e shares +x direction => fold
+        assert blocked.status_code == 400
+        assert set(net.roads) == roads_before           # no dangling road/node
+        straight = node(700, 0)                          # opposite side => straight-ish
+        assert road(c, straight).status_code == 200
+
+        # --- curve guard -----------------------------------------------------
+        # Straight mismatched pair, then bend one arm hard enough to fold it.
+        g = node(-300, 2000); h = node(0, 2000); i = node(300, 2000)
+        rg = road(g, h).json()["road"]["id"]
+        road(h, i)
+        client.post(f"/api/edit/road/{rg}/profile", json={"preset": "highway"})
+        sharp = client.post(f"/api/edit/road/{rg}/curve",
+                            json={"control_x": 0, "control_y": 2600})
+        assert sharp.status_code == 400
+        assert tuple(net.roads[rg].curve_offset) == (0.0, 0.0)
+
+        # --- profile guard ---------------------------------------------------
+        # An equal-width sharp fold is legal; widening one arm into a mismatch
+        # at that same angle is refused.
+        p = node(-2000, 0); q = node(-1700, 30); s = node(-1700, -30)
+        road(q, p); rq = road(p, s).json()["road"]["id"]
+        assert not net.violates_fold_limit(p)           # equal width, sharp: ok
+        widen = client.post(f"/api/edit/road/{rq}/profile",
+                            json={"preset": "highway"})
+        assert widen.status_code == 400
+        assert (net.roads[rq].data or {}).get("profile") is None
+    print("ok: sharp mismatched folds are blocked on every edit path")
+
+
 if __name__ == "__main__":
     test_no_pygame_in_api_stack()   # MUST run first (checks sys.modules)
     test_map_roundtrip()
@@ -409,9 +543,12 @@ if __name__ == "__main__":
     test_building_lifecycle_with_driveway()
     test_continuous_road_drawing_is_one_undo()
     test_road_curve_and_profile_edits()
+    test_fold_limit_predicate()
+    test_fold_limit_blocks_sharp_mismatched_edits()
     test_api_tick_matches_direct_session()
     test_edit_stops_running_sim()
     test_sim_start_requires_buildings()
+    test_sim_start_unified_mode()
     test_schemas_and_control_validation()
     test_geometry_endpoint_shape()
     test_map_files_save_load_jailed()

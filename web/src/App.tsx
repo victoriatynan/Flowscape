@@ -7,6 +7,7 @@ import Inspector, { type Selection } from './Inspector'
 import AnalysisPanel from './AnalysisPanel'
 import DesignPanel from './DesignPanel'
 import { drawScene, type EditorOverlay } from './renderer'
+import { clampNodeMove } from './foldLimit'
 import { Icon, HeritageDefs } from './HeritageIcons'
 import { inkBorderUri } from './heritageArt'
 import ControlBar from './ControlBar'
@@ -54,6 +55,10 @@ export default function App() {
   const [rightPinned, setRightPinned] = useState(false)
   const [barH, setBarH] = useState(56)
   const [barExpanded, setBarExpanded] = useState(false)
+  // Sim clock mode: false = fast decoupled preview (default), true = unified
+  // "real simulator" at `timeScale` sim-seconds per real second.
+  const [simUnified, setSimUnified] = useState(false)
+  const [timeScale, setTimeScale] = useState(8)
   const [uiConfig, setUiConfig] = useState<UIConfig>(() => {
     const cfg = loadConfig()
     applyConfig(cfg)          // saved default (or dev default) at startup
@@ -146,34 +151,31 @@ export default function App() {
     return () => cancelAnimationFrame(raf)
   }, [stream, buildingTypes, heritage])
 
-  // Boil the whole hand-inked chrome on one slow timer (~3x/sec): step the
-  // shared SVG filter seeds (icons, compass, corners, gauges, sparkles) and the
-  // panel/button border-image seed together, so the UI outlines re-draw in step
-  // with the map. Re-rendering happens only when a seed changes (not per frame),
-  // so it stays cheap. Runs only while Heritage is active and the tab is visible.
+  // Bake the whole hand-inked chrome ONCE with a single fixed seed: the shared
+  // SVG filter seeds (icons, compass, corners, gauges, sparkles) and the
+  // panel/button border-image seed are set one time, so the UI outlines read as
+  // still drawn ink that matches the map's baked wobble — no boiling. Runs only
+  // while Heritage is active.
   useEffect(() => {
     if (!heritage) return
-    const seeds = [5, 14, 26, 33, 41, 19]
-    let i = 0
+    const s = 5
     const root = document.documentElement
-    const id = window.setInterval(() => {
-      if (document.hidden) return
-      i = (i + 1) % seeds.length
-      const s = seeds[i]
-      document.querySelector('#ha-ink feTurbulence')?.setAttribute('seed', String(s))
-      document.querySelector('#ha-water feTurbulence')?.setAttribute('seed', String(s + 3))
-      root.style.setProperty('--ha-ink-border', inkBorderUri(s))
-    }, 320)
-    return () => {
-      window.clearInterval(id)
-      root.style.removeProperty('--ha-ink-border')
-    }
+    document.querySelector('#ha-ink feTurbulence')?.setAttribute('seed', String(s))
+    document.querySelector('#ha-water feTurbulence')?.setAttribute('seed', String(s + 3))
+    root.style.setProperty('--ha-ink-border', inkBorderUri(s))
+    return () => { root.style.removeProperty('--ha-ink-border') }
   }, [heritage])
 
   const runEdit = useCallback((fn: () => Promise<unknown>, fit = false) => {
     setError(null)
     fn().then(() => refreshGeometry(fit)).catch((e) => setError(String(e)))
   }, [refreshGeometry])
+
+  // Start the sim in the currently selected clock mode: unified passes the
+  // chosen time_scale; preview sends no clock args (backend defaults apply).
+  const startSim = useCallback(() => runEdit(() =>
+    api.simStart(simUnified ? { unified: true, time_scale: timeScale } : {})),
+    [runEdit, simUnified, timeScale])
 
   const canvasWorld = (e: { clientX: number; clientY: number }): [number, number] => {
     const canvas = canvasRef.current!
@@ -231,8 +233,11 @@ export default function App() {
       drag.y = e.clientY
     } else if (drag.mode === 'node') {
       // Non-authoritative move preview; the backend applies it on release.
+      // Keep a width-mismatched two-road node from folding past the limit so
+      // the drag visibly stops there (mirrors the server guard).
       drag.moved = true
-      overlayRef.current.dragNode = { id: drag.id, x: wx, y: wy }
+      const [cx, cy] = clampNodeMove(geometryRef.current, drag.id, [wx, wy])
+      overlayRef.current.dragNode = { id: drag.id, x: cx, y: cy }
     } else {
       drag.moved = true
       overlayRef.current.dragCurve = { roadId: drag.roadId, x: wx, y: wy }
@@ -247,7 +252,10 @@ export default function App() {
 
     if (drag?.mode === 'node') {
       overlayRef.current.dragNode = null
-      if (drag.moved) runEdit(() => api.moveNode(drag.id, wx, wy))
+      if (drag.moved) {
+        const [cx, cy] = clampNodeMove(geo, drag.id, [wx, wy])
+        runEdit(() => api.moveNode(drag.id, cx, cy))
+      }
       return
     }
     if (drag?.mode === 'curve') {
@@ -462,7 +470,27 @@ export default function App() {
           {mapFiles.map((f) => <option key={f} value={f}>{f}</option>)}
         </select>
         {/* In Heritage Atlas playback + live stats live in the bottom bar. */}
-        {!heritage && !running && <button onClick={() => runEdit(api.simStart)}>▶ Start</button>}
+        {!heritage && !running && (
+          <>
+            <select className="sim-mode" value={simUnified ? 'sim' : 'preview'}
+                    title="Simulation clock" onChange={(e) =>
+                      setSimUnified(e.target.value === 'sim')}>
+              <option value="preview">Preview (fast)</option>
+              <option value="sim">Simulate (accurate)</option>
+            </select>
+            {simUnified && (
+              <select className="sim-speed" value={timeScale}
+                      title="Sim speed (× real time)" onChange={(e) =>
+                        setTimeScale(Number(e.target.value))}>
+                <option value={1}>1×</option>
+                <option value={8}>8×</option>
+                <option value={60}>60×</option>
+                <option value={360}>360×</option>
+              </select>
+            )}
+            <button onClick={startSim}>▶ Start</button>
+          </>
+        )}
         {!heritage && running && !paused && <button onClick={() => runEdit(api.simPause)}>⏸ Pause</button>}
         {!heritage && running && paused && <button onClick={() => runEdit(api.simResume)}>▶ Resume</button>}
         {!heritage && running && <button onClick={() => runEdit(api.simStop)}>■ Stop</button>}
@@ -535,7 +563,11 @@ export default function App() {
             expanded={barExpanded}
             onToggleExpand={() => setBarExpanded((v) => !v)}
             onResizeStart={startResizeBar}
-            onStart={() => runEdit(api.simStart)}
+            unified={simUnified}
+            timeScale={timeScale}
+            onUnifiedChange={setSimUnified}
+            onTimeScaleChange={setTimeScale}
+            onStart={startSim}
             onPause={() => runEdit(api.simPause)}
             onResume={() => runEdit(api.simResume)}
             onStop={() => runEdit(api.simStop)}
