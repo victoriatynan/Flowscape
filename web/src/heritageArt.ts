@@ -261,122 +261,165 @@ export interface InkOpts {
   step: number          // mean sample spacing (px)
   seed?: number         // change to boil / animate
   closed?: boolean
-  sizeJitter?: number   // random ± fraction on each dot's weight (0 = none)
+  sizeJitter?: number   // edge raggedness: ± fray on each side as a fraction of half-width
+  density?: number      // edge-sample resolution (1 = default; >1 = finer/crisper grain)
   colors?: readonly RGB[]  // per-vertex ink colour (light→shadow sweep); flat when absent
 }
 
-// A fixed, fine nib radius (px): the whole stroke is built from dots this size,
-// so a thick line is many nib dots packed across its width rather than one fat
-// mark — that packing (plus per-dot jitter) is what reads as grainy dip-pen ink.
-const NIB = 0.6
-
-// Ink a polyline as a weight-tapered, GRAINY hand-drawn stroke. Resamples the
-// path at irregular intervals with the shared `waver` wander, lerps the weight
-// between vertices (draw_textured_line's taper), then fills each span's cross-
-// section with fine nib dots — jittered in position and size — instead of a
-// clean segment. This is the canvas port of line_weight.py's stamp_weighted_path
-// dot batch: overlapping opaque dots give a solid core with a ragged, speckled
-// edge, and the weight (which swells at corners) just adds more dots across, so
-// ink "pools" heavier there. Every dot is batched into ONE Path2D + a single
-// fill() per stroke, so a whole road casing is one fill, not thousands.
+// Ink a polyline as a weight-tapered hand-drawn stroke, built as a SOLID RIBBON
+// whose CENTRELINE, THICKNESS and COLOUR all lerp between vertices (exactly the
+// draw_textured_line taper), with a small ragged offset applied ONLY to the two
+// EDGES. The core stays a single confident dip-pen line and only its boundary
+// varies — instead of the old dot-cloud, where the whole width dissolved into
+// grain. Each pair of resampled stations becomes one filled quad between the
+// left and right edge points; flat strokes fill in ONE path, coloured strokes
+// bucket their quads by a quantised colour and fill dark last, so a stroke can
+// still shade light→shadow along its length like line_weight.py's lit shapes.
 export function inkStroke(ctx: CanvasRenderingContext2D, pts: readonly P2[],
                           weights: readonly number[], o: InkOpts): void {
   const n = pts.length
   if (n < 2) return
   const seed = o.seed ?? 0
   const closed = o.closed ?? false
-  const sj = o.sizeJitter ?? 0.22
+  const edgeVar = o.sizeJitter ?? 0.22          // edge raggedness (fraction of half-width)
   const cols = o.colors && o.colors.length === n ? o.colors : null
+  const BLACK: RGB = [0, 0, 0]
   const segs = closed ? n : n - 1
-  const S: [number, number, number][] = []   // [x, y, weight] per sample
-  const SC: RGB[] = []                         // per-sample ink colour (if cols)
+
+  // Resample the path at a fine, roughly even interval so the edge grain stays
+  // crisp no matter how far apart the vertices are; the low-frequency hand
+  // wander still rides on o.step. Each station carries its lerped half-width and
+  // (optionally) its lerped ink colour.
+  const res = Math.max(1.4, 2.2 / (o.density ?? 1))
+  const CX: number[] = [], CY: number[] = [], HW: number[] = [], CO: RGB[] = []
   let dist = 0
   for (let s = 0; s < segs; s++) {
     const a = pts[s], b = pts[(s + 1) % n]
     const wa = weights[s], wb = weights[(s + 1) % n]
-    const ca = cols ? cols[s] : null, cb = cols ? cols[(s + 1) % n] : null
+    const ca = cols ? cols[s] : BLACK, cb = cols ? cols[(s + 1) % n] : BLACK
     const dx = b[0] - a[0], dy = b[1] - a[1]
     const len = Math.hypot(dx, dy) || 1e-6
     const nx = -dy / len, ny = dx / len
     let t = 0
     do {
-      const phase = (dist + t) / o.step
-      const off = vnoise(phase, seed) * o.amp
       const f = t / len
-      const wob = 1 + sj * (hash01(phase * 2.3 + seed * 5.1) - 0.5) * 2
-      const w = Math.max(0.4, lerp(wa, wb, f) * wob)
-      S.push([lerp(a[0], b[0], f) + nx * off, lerp(a[1], b[1], f) + ny * off, w])
-      if (cols) SC.push(lerpColor(ca as RGB, cb as RGB, f))
-      t += o.step * (0.55 + 0.9 * hash01(phase * 1.7 + seed * 9.13))
+      const off = vnoise((dist + t) / o.step, seed) * o.amp   // smooth centreline wander
+      CX.push(lerp(a[0], b[0], f) + nx * off)
+      CY.push(lerp(a[1], b[1], f) + ny * off)
+      HW.push(Math.max(0.35, lerp(wa, wb, f) * 0.5))
+      if (cols) CO.push(lerpColor(ca, cb, f))
+      t += res
     } while (t < len)
     dist += len
   }
-  if (closed && S.length) { S.push(S[0]); if (cols) SC.push(SC[0]) }
-  else if (!closed) {
-    S.push([pts[n - 1][0], pts[n - 1][1], weights[n - 1]])
-    if (cols) SC.push(cols[n - 1])
+  if (closed) {
+    CX.push(CX[0]); CY.push(CY[0]); HW.push(HW[0]); if (cols) CO.push(CO[0])
+  } else {
+    CX.push(pts[n - 1][0]); CY.push(pts[n - 1][1])
+    HW.push(Math.max(0.35, weights[n - 1] * 0.5)); if (cols) CO.push(cols[n - 1])
+  }
+  const m = CX.length
+  if (m < 2) return
+
+  // Left / right edge points (and the unit normal that made them): straddle the
+  // wavered centreline by ±half-width, each side nudged by its OWN blend of
+  // smooth + fine noise, so the two boundaries wander and fray independently
+  // while the interior stays solid.
+  const LX = new Float64Array(m), LY = new Float64Array(m)
+  const RX = new Float64Array(m), RY = new Float64Array(m)
+  const NX = new Float64Array(m), NY = new Float64Array(m)
+  for (let i = 0; i < m; i++) {
+    const pi = i > 0 ? i - 1 : 0, qi = i < m - 1 ? i + 1 : m - 1
+    const tx = CX[qi] - CX[pi], ty = CY[qi] - CY[pi]
+    const tl = Math.hypot(tx, ty) || 1
+    const nx = -ty / tl, ny = tx / tl
+    NX[i] = nx; NY[i] = ny
+    const grain = (kk: number) =>
+      (vnoise(i * 0.5, seed + kk) * 0.5
+        + (hash01(i * 1.87 + seed * (kk + 1)) * 2 - 1) * 0.5) * edgeVar * HW[i]
+    const hwL = Math.max(0.16, HW[i] + grain(11))
+    const hwR = Math.max(0.16, HW[i] + grain(29))
+    LX[i] = CX[i] + nx * hwL; LY[i] = CY[i] + ny * hwL
+    RX[i] = CX[i] - nx * hwR; RY[i] = CY[i] - ny * hwR
   }
 
-  // Stamp nib dots along and across each span. Flat strokes batch into ONE
-  // fill(); coloured strokes bucket dots by a quantised colour and fill once
-  // per bucket (dark buckets last, so overlaps darken like the Python splat) —
-  // the canvas analogue of line_weight.py grouping its dot splat by radius.
-  const along = NIB * 2.0                      // dot spacing along the path
-  let k = (seed * 131) | 0                      // deterministic per-dot RNG index
-  const buckets = cols ? new Map<number, number[]>() : null
-  if (!cols) { ctx.fillStyle = ctx.strokeStyle; ctx.beginPath() }
-  for (let i = 0; i < S.length - 1; i++) {
-    const p = S[i], q = S[i + 1]
-    const dx = q[0] - p[0], dy = q[1] - p[1]
-    const len = Math.hypot(dx, dy) || 1e-6
-    const ux = dx / len, uy = dy / len          // tangent
-    const nx = -uy, ny = ux                      // normal
-    const steps = Math.max(1, Math.round(len / along))
-    for (let s = 0; s < steps; s++) {
-      const f = s / steps
-      const cx = lerp(p[0], q[0], f), cy = lerp(p[1], q[1], f)
-      const half = Math.max(0.5, lerp(p[2], q[2], f) * 0.5)
-      // dots across the thickness (more where the line is thicker / at corners)
-      const ribs = Math.min(12, Math.max(1, Math.round((2 * half) / (NIB * 1.3))))
-      // this station's colour (same across the thickness), quantised to a bucket
-      let arr: number[] | null = null
-      if (cols) {
-        const cc = lerpColor(SC[i], SC[i + 1], f)
-        const qr = Math.min(252, Math.round(cc[0] / 12) * 12)
-        const qg = Math.min(252, Math.round(cc[1] / 12) * 12)
-        const qb = Math.min(252, Math.round(cc[2] / 12) * 12)
-        const key = (qr << 16) | (qg << 8) | qb
-        arr = buckets!.get(key) ?? null
-        if (!arr) { arr = []; buckets!.set(key, arr) }
-      }
-      for (let m = 0; m < ribs; m++) {
-        k++
-        const frac = ribs > 1 ? m / (ribs - 1) - 0.5 : 0     // -0.5..0.5 across
-        const jN = hash01(k * 1.73) * 2 - 1
-        const jT = hash01(k * 2.91 + 7.1) * 2 - 1
-        const jR = hash01(k * 3.57 + 3.3)
-        const offN = frac * 2 * half + jN * NIB * 0.85       // across + jitter
-        const offT = jT * NIB * 0.85                          // along jitter
-        const rr = Math.max(0.3, NIB * (0.7 + 0.55 * jR))
-        const x = cx + nx * offN + ux * offT
-        const y = cy + ny * offN + uy * offT
-        if (arr) { arr.push(x, y, rr) }
-        else {
-          ctx.moveTo(x + rr, y)                               // avoid connector
-          ctx.arc(x, y, rr, 0, Math.PI * 2)
+  // Edge speckle: a fine scatter of ink grains hugging each boundary, just
+  // beyond the solid core, so the rim breaks up into textured dip-pen grain
+  // (like the line_weight.py plates) rather than a clean filled edge. The core
+  // stays solid — only the boundary frays. Emitted deterministically per
+  // station so the grain is baked, not boiling. Routed to `emit`: flat strokes
+  // add arcs straight to the current path, coloured strokes bucket them by tone.
+  let gk = (seed * 977) | 0
+  const speckle = (emit: (x: number, y: number, r: number, ci: number) => void) => {
+    for (let i = 0; i < m; i++) {
+      const tx = -NY[i], ty = NX[i]                 // tangent
+      for (let side = 1; side >= -1; side -= 2) {    // +1 = left rim, -1 = right rim
+        const bx = side > 0 ? LX[i] : RX[i]
+        const by = side > 0 ? LY[i] : RY[i]
+        const count = 1 + (hash01(gk * 1.3 + 0.5) < 0.45 ? 1 : 0)
+        for (let g = 0; g < count; g++) {
+          gk++
+          const out = (hash01(gk * 1.7) - 0.28) * (0.9 + 1.5 * edgeVar * HW[i])
+          const along = (hash01(gk * 2.3 + 5.1) * 2 - 1) * 1.5
+          const r = 0.5 * (0.65 + 0.7 * hash01(gk * 3.1 + 1.7))
+          emit(bx + side * NX[i] * out + tx * along,
+               by + side * NY[i] * out + ty * along, r, i)
         }
       }
     }
   }
-  if (!buckets) { ctx.fill(); return }
-  // Paint lightest buckets first so the darkest ink lands on top at overlaps.
+
+  if (!cols) {
+    ctx.fillStyle = ctx.strokeStyle
+    ctx.beginPath()
+    for (let i = 0; i < m - 1; i++) {
+      ctx.moveTo(LX[i], LY[i]); ctx.lineTo(LX[i + 1], LY[i + 1])
+      ctx.lineTo(RX[i + 1], RY[i + 1]); ctx.lineTo(RX[i], RY[i]); ctx.closePath()
+    }
+    speckle((x, y, r) => { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, Math.PI * 2) })
+    ctx.fill()
+    return
+  }
+
+  // Coloured: bucket each quad by its (quantised) mean colour, then paint the
+  // lightest first so the darkest ink lands on top where quads overlap — the
+  // solid-ribbon analogue of line_weight.py's order-independent dark splat. Edge
+  // grains bucket the same way (by their station colour) and paint on top.
+  const quantKey = (r: number, g: number, b: number) =>
+    ((Math.min(252, Math.round(r / 12) * 12)) << 16)
+    | ((Math.min(252, Math.round(g / 12) * 12)) << 8)
+    | (Math.min(252, Math.round(b / 12) * 12))
+  const buckets = new Map<number, number[]>()
+  for (let i = 0; i < m - 1; i++) {
+    const c0 = CO[i], c1 = CO[i + 1]
+    const key = quantKey((c0[0] + c1[0]) / 2, (c0[1] + c1[1]) / 2, (c0[2] + c1[2]) / 2)
+    let arr = buckets.get(key)
+    if (!arr) { arr = []; buckets.set(key, arr) }
+    arr.push(LX[i], LY[i], LX[i + 1], LY[i + 1], RX[i + 1], RY[i + 1], RX[i], RY[i])
+  }
+  const dotB = new Map<number, number[]>()
+  speckle((x, y, r, ci) => {
+    const c = CO[ci]
+    const key = quantKey(c[0], c[1], c[2])
+    let arr = dotB.get(key)
+    if (!arr) { arr = []; dotB.set(key, arr) }
+    arr.push(x, y, r)
+  })
   const bright = (key: number) => ((key >> 16) & 255) + ((key >> 8) & 255) + (key & 255)
   for (const [key, arr] of [...buckets].sort((a, b) => bright(b[0]) - bright(a[0]))) {
     ctx.fillStyle = `rgb(${(key >> 16) & 255},${(key >> 8) & 255},${key & 255})`
     ctx.beginPath()
+    for (let i = 0; i < arr.length; i += 8) {
+      ctx.moveTo(arr[i], arr[i + 1]); ctx.lineTo(arr[i + 2], arr[i + 3])
+      ctx.lineTo(arr[i + 4], arr[i + 5]); ctx.lineTo(arr[i + 6], arr[i + 7]); ctx.closePath()
+    }
+    ctx.fill()
+  }
+  for (const [key, arr] of [...dotB].sort((a, b) => bright(b[0]) - bright(a[0]))) {
+    ctx.fillStyle = `rgb(${(key >> 16) & 255},${(key >> 8) & 255},${key & 255})`
+    ctx.beginPath()
     for (let i = 0; i < arr.length; i += 3) {
-      ctx.moveTo(arr[i] + arr[i + 2], arr[i + 1])
-      ctx.arc(arr[i], arr[i + 1], arr[i + 2], 0, Math.PI * 2)
+      ctx.moveTo(arr[i] + arr[i + 2], arr[i + 1]); ctx.arc(arr[i], arr[i + 1], arr[i + 2], 0, Math.PI * 2)
     }
     ctx.fill()
   }
@@ -420,12 +463,13 @@ export function inkBorderUri(seed: number): string {
   const base = 10
   // Same light-angle model as the map ink: the frame thins/pales on the edges
   // facing the top-left light and thickens/darkens on the ones facing away,
-  // plus the curvature swell at the corners. #5a4632 is the mid ink colour.
-  const mid = hexToRgb('#5a4632')
+  // plus the curvature swell at the corners. #3a322a is the mid ink colour —
+  // charcoal-brown, matching the map's charcoal-on-cream dip-pen strokes.
+  const mid = hexToRgb('#3a322a')
   const { weights, colors } = litShape(wav, {
     light: [-1, -1], minW: base * 0.85, maxW: base * 1.5,
-    litColor: lerpColor(mid, [214, 198, 166], 0.5),
-    shadowColor: lerpColor(mid, [26, 20, 14], 0.5),
+    litColor: lerpColor(mid, [206, 192, 162], 0.5),
+    shadowColor: lerpColor(mid, [20, 16, 12], 0.5),
     scale: 34, cap: base * 1.7, spread: 4, closed: true,
   })
   const r = (v: number) => Math.round(v * 100) / 100

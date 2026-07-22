@@ -19,6 +19,44 @@ export interface UIConfig {
   panelOpacity: number            // 0..1
   radius: number                  // px corner radius
   outlineWidth: number            // px; outlines on panels/buttons (0 = none)
+  ink?: InkConfig                 // hand-drawn map-ink character (Heritage map)
+}
+
+// Hand-drawn map-ink character. The user-facing knobs on the stamped dip-pen
+// strokes the Heritage map draws (renderer.ts inks roads/junctions/buildings
+// through heritageArt.inkStroke); the renderer multiplies its baseline stamp
+// opts by these. `character` is one of INK_CHARACTERS (or 'Custom' once a slider
+// is nudged); the three multipliers are relative to 'Default' (1 = shipped look).
+export interface InkConfig {
+  character: string   // 'Fine' | 'Default' | 'Bold' | 'Sketchy' | 'Custom'
+  wobble: number      // 0..2.5  position/size jitter (how hand-drawn it reads)
+  weight: number      // 0.4..2  stroke thickness / silhouette darkness
+  density: number     // 0.5..1.6  dot density along the line (higher = inkier)
+  ink: string         // ink colour (hex); Heritage default = warm brown
+}
+
+// Named line characters — each sets the three stroke multipliers. Swatches the
+// user picks from; nudging any slider afterwards flips `character` to 'Custom'.
+export const INK_CHARACTERS: Record<string,
+  { wobble: number; weight: number; density: number }> = {
+  Fine:    { wobble: 0.6, weight: 0.7, density: 1.2 },
+  Default: { wobble: 1.0, weight: 1.0, density: 1.0 },
+  Bold:    { wobble: 1.1, weight: 1.6, density: 1.1 },
+  Sketchy: { wobble: 2.1, weight: 1.0, density: 0.8 },
+}
+
+// Charcoal dip-pen ink on cream — matching the hand-drawn Testing Code plates
+// (line_weight.py uses ~rgb(24,21,18) near-black). Warm brown '#40301e' is the
+// alternative atlas ink users can reach for.
+export const DEFAULT_INK: InkConfig = {
+  character: 'Default', wobble: 1, weight: 1, density: 1, ink: '#2b2620',
+}
+
+/** Resolve a character name to a full InkConfig (keeps the current colour). */
+export function characterInk(name: string, ink: string): InkConfig {
+  const c = INK_CHARACTERS[name]
+  return c ? { character: name, ...c, ink }
+           : { ...DEFAULT_INK, character: name, ink }
 }
 
 // Named font stacks (web-safe on Windows/mac/Linux; no webfont downloads).
@@ -54,6 +92,7 @@ export const DEFAULT_CONFIG: UIConfig = {
   panelOpacity: 0.9,
   radius: 8,
   outlineWidth: 1,
+  ink: { ...DEFAULT_INK },
 }
 
 // Built-in presets: each overrides only what changes (theme inheritance).
@@ -87,15 +126,15 @@ export const BUILT_IN_PRESETS: Record<string, Partial<UIConfig> & {
   // gated on [data-ui-preset], so only the chrome changes — never behavior.
   'Heritage Atlas': {
     theme: {
-      'panel-bg': '#e9dcbb',      // aged ivory paper
-      'panel-text': '#40301e',    // warm dark-brown dip-pen ink
+      'panel-bg': '#e9dcbb',      // warm cream paper
+      'panel-text': '#2f2823',    // charcoal-brown dip-pen ink
       'accent': '#a8532c',        // painted terracotta / sienna
       'button-bg': '#e0d0a6',     // deeper cream wash
-      'button-border': '#5a4632', // brown ink outline
+      'button-border': '#3a322a', // charcoal ink outline
       'button-hover': '#d6c294',  // warmer wash
       'danger': '#9c3a24',        // rust red
       'warn': '#8a6a2c',          // ochre
-      'outline': '#5a4632',       // brown ink outline
+      'outline': '#3a322a',       // charcoal ink outline
     },
     fontFamily: 'Atlas Antique',  // old-style serif body; IM Fell headers via CSS
     fontSize: 15,
@@ -127,16 +166,23 @@ export function presetConfig(name: string): UIConfig {
               : { ...DEFAULT_CONFIG }
 }
 
-/** Developer defaults <- saved user preferences (versioned). */
+// The look Flowscape ships in: the hand-drawn Heritage Atlas manuscript (inked
+// wavy chrome on paper) over the charcoal-on-cream map, so a fresh install opens
+// fully hand-drawn — roads AND UI — through the one shared ink toolkit. The
+// fantasy-24 DEFAULT_CONFIG remains the merge base every preset layers onto.
+export const SHIPPED_PRESET = 'Heritage Atlas'
+export function shippedConfig(): UIConfig { return presetConfig(SHIPPED_PRESET) }
+
+/** Shipped Heritage Atlas default <- saved user preferences (versioned). */
 export function loadConfig(): UIConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return { ...DEFAULT_CONFIG }
+    if (!raw) return shippedConfig()
     const saved = JSON.parse(raw) as Partial<UIConfig>
-    if (saved.version !== 1) return { ...DEFAULT_CONFIG } // future: migrate
+    if (saved.version !== 1) return shippedConfig() // future: migrate
     return mergeConfig(DEFAULT_CONFIG, saved)
   } catch {
-    return { ...DEFAULT_CONFIG }
+    return shippedConfig()
   }
 }
 
@@ -146,7 +192,7 @@ export function saveAsDefault(cfg: UIConfig) {
 
 export function resetToDefaults(): UIConfig {
   localStorage.removeItem(STORAGE_KEY)
-  return { ...DEFAULT_CONFIG, theme: { ...DEFAULT_THEME } }
+  return shippedConfig()
 }
 
 export function userPresets(): Record<string, Partial<UIConfig>> {

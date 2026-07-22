@@ -11,7 +11,7 @@ import { clampNodeMove } from './foldLimit'
 import { Icon, HeritageDefs } from './HeritageIcons'
 import { inkBorderUri } from './heritageArt'
 import ControlBar from './ControlBar'
-import { type UIConfig, applyConfig, loadConfig } from './uiConfig'
+import { type UIConfig, applyConfig, loadConfig, DEFAULT_INK } from './uiConfig'
 import { interpolateVehicles, useSimStream } from './useSimStream'
 import type { BuildingTypesSchema, ControlSchema, MapGeometry,
               RoadPresetsSchema } from './types'
@@ -65,6 +65,10 @@ export default function App() {
     return cfg
   })
   const heritage = uiConfig.preset === 'Heritage Atlas'
+  // Latest map-ink character, read live by the render loop (below) without
+  // re-subscribing the RAF effect every time a slider moves.
+  const inkRef = useRef(uiConfig.ink ?? DEFAULT_INK)
+  inkRef.current = uiConfig.ink ?? DEFAULT_INK
   const [mapLabel, setMapLabel] = useState('empty map')
   const [error, setError] = useState<string | null>(null)
   const { stream, meta, connected } = useSimStream()
@@ -142,7 +146,7 @@ export default function App() {
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
           drawScene(ctx, w, h, cameraRef.current, geometryRef.current,
             interpolateVehicles(stream.current, performance.now()),
-            categories(), overlayRef.current, heritage)
+            categories(), overlayRef.current, heritage, inkRef.current)
         }
       }
       raf = requestAnimationFrame(tick)

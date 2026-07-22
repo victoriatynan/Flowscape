@@ -2,6 +2,7 @@ import type { Camera } from './camera'
 import type { MapGeometry, Pt, VehicleSnap } from './types'
 import { hash01, waver, pathSmooth, litShape, inkStroke,
          hexToRgb, lerpColor, type P2, type RGB } from './heritageArt'
+import { DEFAULT_INK, type InkConfig } from './uiConfig'
 
 // Editor overlay state (all temporary UI state; previews are visual only —
 // the backend re-validates and applies every commit).
@@ -49,19 +50,16 @@ const CATEGORY_COLORS: Record<string, string> = {
 // change; every shape is still the backend's tessellation, so the simulation
 // stays exactly as readable. Applied when `heritage` is passed to drawScene.
 const HERITAGE: Partial<typeof COLORS> = {
-  background: '#e9dcbb',      // aged ivory paper (matches the panels)
-  asphalt: '#5a6b52',         // washed sage-green route body
-  asphaltLight: '#d8c79c',    // buff casing / shoulder
-  node: '#4a3826',            // brown ink survey point
-  nodeControl: '#a8532c',     // terracotta control ring
-  vehicleBody: '#e7d8b4',     // parchment
-  vehicleOutline: '#40301e',  // warm brown ink
+  background: '#e9dcbb',      // warm cream paper (matches the panels & the plates)
+  asphalt: '#cabf9f',         // faint greige road body — read by its charcoal casing
+  asphaltLight: '#dcd0ac',    // buff casing / shoulder, sits between paper and road
+  node: '#2b2620',            // charcoal ink survey point
+  nodeControl: '#a8532c',     // terracotta control ring (the one warm accent)
+  vehicleBody: '#ece1c0',     // parchment
+  vehicleOutline: '#2b2620',  // charcoal ink
   vehicleBlocked: '#9c3a24',  // rust red
-  buildingOutline: '#40301e', // warm brown ink
+  buildingOutline: '#2b2620', // charcoal ink
 }
-
-// Warm dip-pen ink for the manuscript outline pass.
-const HERITAGE_INK = '#40301e'
 
 // One shared light for the whole scene, so every inked line follows the SAME
 // line-weight model (line_weight.py's draw_lit_shape): top-left, screen space
@@ -73,11 +71,14 @@ const LIGHT_DIR: P2 = [-1, -1]
 // centred on it, so the line keeps its identity while gaining the tonal turn.
 const INK_PAPER: RGB = [232, 224, 202]
 const INK_DARK: RGB = [24, 19, 14]
-// contrast 1 for hero silhouettes; <1 for thin detail so it stays pale.
+// contrast 1 for hero silhouettes; <1 for thin detail so it stays pale. The
+// lit end pulls well toward the paper (a pale grey line where the edge faces the
+// light) and the shadow end well toward near-black, so a single stroke sweeps
+// from faint to bold around a form like the line_weight.py circle.
 function inkAnchors(hex: string, contrast: number): [RGB, RGB] {
   const mid = hexToRgb(hex)
-  return [lerpColor(mid, INK_PAPER, 0.42 * contrast),
-          lerpColor(mid, INK_DARK, 0.55 * contrast)]
+  return [lerpColor(mid, INK_PAPER, 0.6 * contrast),
+          lerpColor(mid, INK_DARK, 0.68 * contrast)]
 }
 
 // hash01 (per-element weight jitter) and the shared hand-drawn waver both come
@@ -182,12 +183,14 @@ function renderStatic(
   categoryOf: (buildingType: string) => string | undefined,
   overlay: EditorOverlay,
   heritage: boolean,
+  ink: InkConfig,
 ) {
   const pal = heritage ? { ...COLORS, ...HERITAGE } : COLORS
   // Dark dip-pen ink for every closed body outline (roads/junctions/buildings),
   // used in BOTH presets so all linework is hand-drawn — only the colour differs
-  // (line_weight.py's hero-silhouette weight).
-  const INK = heritage ? HERITAGE_INK : pal.buildingOutline
+  // (line_weight.py's hero-silhouette weight). In Heritage the user's ink-colour
+  // knob replaces the default warm brown.
+  const INK = heritage ? ink.ink : pal.buildingOutline
   ctx.fillStyle = pal.background
   ctx.fillRect(0, 0, w, h)
   if (heritage) drawSurveyGrid(ctx, w, h, cam)
@@ -211,18 +214,24 @@ function renderStatic(
   // pools at corners. `strokeStyle` is set by the caller.
   const strokePolyInk = (pts: readonly Pt[], seed: number, widthMul = 1) => {
     const scr = toScr(pts)
-    const base = Math.max(3, 3.4 * cam.scale) * widthMul
-      * (0.85 + 0.32 * hash01(seed))
+    // A fine, confident dip-pen line like the line_weight.py plates: modest
+    // weight that stays a LINE (capped so it can't balloon into a fat band at
+    // high zoom), a gentle light→shadow taper, and only a slight swell at
+    // corners — not the heavy pooling that clumps junctions into ink blobs.
+    const base = Math.min(4.5, Math.max(1.8, 1.9 * cam.scale)) * widthMul
+      * (0.9 + 0.22 * hash01(seed)) * ink.weight
     const [lit, shadow] = inkAnchors(ctx.strokeStyle as string, 1)
+    // Wide weight swing (thin lit edge → thick shadow edge) is what reads as a
+    // lit form rather than an even outline — the circle in line_weight.py.
     const { weights, colors } = litShape(scr, {
-      light: LIGHT_DIR, minW: base * 0.85, maxW: base * 1.5,
+      light: LIGHT_DIR, minW: base * 0.55, maxW: base * 1.9,
       litColor: lit, shadowColor: shadow,
-      scale: 26, cap: base * 1.6, spread: 4, closed: true,
+      scale: 16, cap: base * 0.7, spread: 5, closed: true,
     })
     inkStroke(ctx, scr, weights, {
-      amp: Math.min(1.7, 0.6 + 0.45 * cam.scale),
+      amp: Math.min(0.85, 0.3 + 0.22 * cam.scale) * ink.wobble,
       step: Math.max(10, 7 * cam.scale), seed,
-      closed: true, sizeJitter: 0.2, colors,
+      closed: true, sizeJitter: 0.4 * ink.wobble, density: ink.density, colors,
     })
   }
 
@@ -231,16 +240,17 @@ function renderStatic(
   const strokeInkLine = (pts: readonly Pt[], seed: number, weight: number,
                          closed = false, worldPts = true) => {
     const scr = worldPts ? toScr(pts) : (pts as readonly P2[])
+    const wt = weight * ink.weight
     const [lit, shadow] = inkAnchors(ctx.strokeStyle as string, 0.6)
     const { weights, colors } = litShape(scr, {
-      light: LIGHT_DIR, minW: weight * 0.9, maxW: weight * 1.35,
+      light: LIGHT_DIR, minW: wt * 0.95, maxW: wt * 1.2,
       litColor: lit, shadowColor: shadow,
-      scale: 12, cap: weight * 1.6, spread: 3, closed,
+      scale: 10, cap: wt * 0.8, spread: 3, closed,
     })
     inkStroke(ctx, scr, weights, {
-      amp: Math.min(1.2, 0.35 + 0.28 * cam.scale),
+      amp: Math.min(0.7, 0.25 + 0.2 * cam.scale) * ink.wobble,
       step: Math.max(8, 6 * cam.scale), seed,
-      closed, sizeJitter: 0.3, colors,
+      closed, sizeJitter: 0.35 * ink.wobble, density: ink.density, colors,
     })
   }
 
@@ -361,12 +371,19 @@ function renderStatic(
 
   // Buildings: category-colored footprints. In the manuscript view each gets
   // the same bold hand-inked, boiling outline as the roads.
+  // In the manuscript view the saturated category colours are pulled halfway to
+  // the cream paper so each footprint reads as a soft watercolour wash under the
+  // charcoal ink, not a flat digital swatch.
+  const paperRgb = hexToRgb(pal.background)
+  const fillFor = (hex: string) =>
+    heritage ? `rgb(${lerpColor(hexToRgb(hex), paperRgb, 0.5)
+      .map((c) => Math.round(c)).join(',')})` : hex
   for (const b of geometry.buildings) {
     const half = b.size_ft / 2
     const [sx, sy] = cam.toScreen(b.x - half, b.y - half, w, h)
     const side = b.size_ft * cam.scale
-    ctx.fillStyle = CATEGORY_COLORS[categoryOf(b.building_type) ?? '']
-      ?? pal.buildingDefault
+    ctx.fillStyle = fillFor(CATEGORY_COLORS[categoryOf(b.building_type) ?? '']
+      ?? pal.buildingDefault)
     ctx.fillRect(sx, sy, side, side)
     ctx.strokeStyle = pal.buildingOutline
     ctx.lineJoin = 'round'
@@ -567,6 +584,7 @@ export function drawScene(
   categoryOf: (buildingType: string) => string | undefined,
   overlay: EditorOverlay = {},
   heritage = false,
+  ink: InkConfig = DEFAULT_INK,
 ) {
   const pal = heritage ? { ...COLORS, ...HERITAGE } : COLORS
   const dpr = ctx.getTransform().a || 1
@@ -584,6 +602,7 @@ export function drawScene(
   const [ox, oy] = cam.toScreen(0, 0, w, h)
   const key = `${ox.toFixed(2)}|${oy.toFixed(2)}|${cam.scale}|${w}|${h}|${dpr}`
     + `|${heritage}|${JSON.stringify(overlay)}`
+    + `|${ink.wobble}|${ink.weight}|${ink.density}|${ink.ink}`
   const cw = Math.max(1, Math.round(w * dpr))
   const chh = Math.max(1, Math.round(h * dpr))
 
@@ -595,7 +614,7 @@ export function drawScene(
     const cctx = cacheCanvas.getContext('2d')!
     cctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     cctx.clearRect(0, 0, w, h)
-    renderStatic(cctx, w, h, cam, geometry, categoryOf, overlay, heritage)
+    renderStatic(cctx, w, h, cam, geometry, categoryOf, overlay, heritage, ink)
     cacheGeom = geometry
     cacheKey = key
   }
