@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import {
-  type UIConfig, FONT_FAMILIES, applyConfig, presetConfig, presetNames,
+  type UIConfig, FONT_FAMILIES, applyConfig,
   resetToDefaults, saveAsDefault, saveUserPreset,
 } from './uiConfig'
 
 // In-app UI Design panel (UI_PLAN.md's "design sandbox", living inside the
-// real interface so the preview can never drift from the product): edit the
-// chrome tokens live, switch presets, save your own, and Save as Default so
-// Flowscape starts with your design.
+// real interface so the preview can never drift from the product): retune the
+// single Heritage skin's tokens live, save your own variant, and Save as
+// Default so Flowscape starts with your design. There is no skin switcher —
+// Heritage Atlas is the only skin; edits produce a 'Custom' variant of it.
 
 const TOKEN_LABELS: [string, string][] = [
   ['panel-bg', 'Panel background'],
@@ -45,13 +46,6 @@ export default function DesignPanel({ config, onChange }: Props) {
 
   return (
     <div className="design">
-      <div className="row">
-        <label>Preset</label>
-        <select value={presetNames().includes(config.preset) ? config.preset : 'Default'}
-                onChange={(e) => update(presetConfig(e.target.value))}>
-          {presetNames().map((n) => <option key={n} value={n}>{n}</option>)}
-        </select>
-      </div>
       {TOKEN_LABELS.map(([key, label]) => (
         <div className="row" key={key}>
           <label>{label}</label>

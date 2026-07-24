@@ -9,7 +9,7 @@ import DesignPanel from './DesignPanel'
 import { drawScene, type EditorOverlay } from './renderer'
 import { clampNodeMove } from './foldLimit'
 import { Icon, HeritageDefs } from './HeritageIcons'
-import { inkBorderUri } from './heritageArt'
+import { inkBorderUri, inkRingUri, inkDividerUri } from './heritageArt'
 import ControlBar from './ControlBar'
 import { type UIConfig, applyConfig, loadConfig } from './uiConfig'
 import { interpolateVehicles, useSimStream } from './useSimStream'
@@ -43,7 +43,6 @@ export default function App() {
   const [roadPresets, setRoadPresets] = useState<RoadPresetsSchema | null>(null)
   const [geoVersion, setGeoVersion] = useState(0)
   const [mapFiles, setMapFiles] = useState<string[]>([])
-  const [showAnalysis, setShowAnalysis] = useState(false)
   const [showDesign, setShowDesign] = useState(false)
   // Heritage Atlas docked layout: adjustable, collapsible, pinnable regions
   // plus a resizable bottom simulation control bar.
@@ -64,7 +63,10 @@ export default function App() {
     applyConfig(cfg)          // saved default (or dev default) at startup
     return cfg
   })
-  const heritage = uiConfig.preset === 'Heritage Atlas'
+  // Heritage Atlas is the only skin now, so this is always true; kept as a
+  // named constant so the (still Heritage-specific) render/props reads stay
+  // self-documenting.
+  const heritage = true
   const [mapLabel, setMapLabel] = useState('empty map')
   const [error, setError] = useState<string | null>(null)
   const { stream, meta, connected } = useSimStream()
@@ -151,20 +153,26 @@ export default function App() {
     return () => cancelAnimationFrame(raf)
   }, [stream, buildingTypes, heritage])
 
-  // Bake the whole hand-inked chrome ONCE with a single fixed seed: the shared
-  // SVG filter seeds (icons, compass, corners, gauges, sparkles) and the
-  // panel/button border-image seed are set one time, so the UI outlines read as
-  // still drawn ink that matches the map's baked wobble — no boiling. Runs only
-  // while Heritage is active.
+  // Bake the whole hand-inked chrome ONCE with fixed seeds: the shared SVG
+  // filter seeds (icons, compass, corners, gauges, sparkles) and the CSS ink
+  // shapes — the panel/button border frame, the round-element ring, and the
+  // straight divider rule — are all set one time, so the UI outlines read as
+  // still drawn ink that matches the map's baked wobble (no boiling). Every one
+  // of these comes from the same waver+litShape line model as the road ink.
   useEffect(() => {
-    if (!heritage) return
     const s = 5
     const root = document.documentElement
     document.querySelector('#ha-ink feTurbulence')?.setAttribute('seed', String(s))
     document.querySelector('#ha-water feTurbulence')?.setAttribute('seed', String(s + 3))
     root.style.setProperty('--ha-ink-border', inkBorderUri(s))
-    return () => { root.style.removeProperty('--ha-ink-border') }
-  }, [heritage])
+    root.style.setProperty('--ha-ink-ring', inkRingUri(s + 1))
+    root.style.setProperty('--ha-ink-hr', inkDividerUri(s + 2))
+    return () => {
+      root.style.removeProperty('--ha-ink-border')
+      root.style.removeProperty('--ha-ink-ring')
+      root.style.removeProperty('--ha-ink-hr')
+    }
+  }, [])
 
   const runEdit = useCallback((fn: () => Promise<unknown>, fit = false) => {
     setError(null)
@@ -338,8 +346,6 @@ export default function App() {
     return () => canvas.removeEventListener('wheel', onWheel)
   }, [])
 
-  const running = meta.running
-  const paused = meta.paused ?? false
   const tools: [Tool, string][] = [
     ['select', 'Select'], ['node', 'Node'], ['road', 'Road'], ['building', 'Building'],
   ]
@@ -378,14 +384,14 @@ export default function App() {
     window.addEventListener('pointerup', up)
   }
 
-  // Editing controls shared by the horizontal editbar (default presets) and the
-  // vertical Heritage tool rail; orientation and labels are handled in CSS.
+  // Editing controls for the vertical Heritage tool rail; orientation and
+  // labels are handled in CSS. Analysis is docked permanently, so no toggle.
   const editControls = (
     <>
       {tools.map(([t, label]) => (
         <button key={t} className={tool === t ? 'active' : ''} title={label}
                 onClick={() => { setTool(t); setRoadAnchorId(null) }}>
-          {heritage && <Icon name={t} />}<span>{label}</span>
+          <Icon name={t} /><span>{label}</span>
         </button>
       ))}
       {tool === 'building' && (
@@ -397,16 +403,9 @@ export default function App() {
         </select>
       )}
       <button onClick={() => runEdit(api.undo)} title="Undo">
-        {heritage ? <Icon name="undo" /> : '↶'}<span>Undo</span></button>
+        <Icon name="undo" /><span>Undo</span></button>
       <button onClick={() => runEdit(api.redo)} title="Redo">
-        {heritage ? <Icon name="redo" /> : '↷'}<span>Redo</span></button>
-      {/* Default presets toggle a floating analysis panel; Heritage Atlas
-          docks it permanently, so no toggle there. */}
-      {!heritage && (
-        <button className={showAnalysis ? 'active' : ''} title="Analysis"
-                onClick={() => setShowAnalysis((v) => !v)}>
-          <span>Analysis</span></button>
-      )}
+        <Icon name="redo" /><span>Redo</span></button>
       {tool === 'road' && (
         <span className="hint">
           {roadAnchorId == null ? 'click the first node' : 'click the second node'}
@@ -442,15 +441,13 @@ export default function App() {
   // and a floating tab offers to re-open them. The bottom control bar occupies
   // its own row whose height the user can drag.
   const barEff = barExpanded ? Math.max(barH, 150) : barH
-  const dockedStyle = heritage
-    ? ({ '--ha-left': `${leftCollapsed ? 0 : leftW}px`,
-         '--ha-right': `${rightCollapsed ? 0 : rightW}px`,
-         '--ha-bar': `${barEff}px` } as React.CSSProperties)
-    : undefined
+  const dockedStyle = { '--ha-left': `${leftCollapsed ? 0 : leftW}px`,
+                        '--ha-right': `${rightCollapsed ? 0 : rightW}px`,
+                        '--ha-bar': `${barEff}px` } as React.CSSProperties
 
   return (
-    <div className={`app${heritage ? ' ha-docked' : ''}`} style={dockedStyle}>
-      {heritage && <HeritageDefs />}
+    <div className="app ha-docked" style={dockedStyle}>
+      <HeritageDefs />
       <canvas
         ref={canvasRef}
         className="world"
@@ -469,49 +466,16 @@ export default function App() {
           <option value="">Load…</option>
           {mapFiles.map((f) => <option key={f} value={f}>{f}</option>)}
         </select>
-        {/* In Heritage Atlas playback + live stats live in the bottom bar. */}
-        {!heritage && !running && (
-          <>
-            <select className="sim-mode" value={simUnified ? 'sim' : 'preview'}
-                    title="Simulation clock" onChange={(e) =>
-                      setSimUnified(e.target.value === 'sim')}>
-              <option value="preview">Preview (fast)</option>
-              <option value="sim">Simulate (accurate)</option>
-            </select>
-            {simUnified && (
-              <select className="sim-speed" value={timeScale}
-                      title="Sim speed (× real time)" onChange={(e) =>
-                        setTimeScale(Number(e.target.value))}>
-                <option value={1}>1×</option>
-                <option value={8}>8×</option>
-                <option value={60}>60×</option>
-                <option value={360}>360×</option>
-              </select>
-            )}
-            <button onClick={startSim}>▶ Start</button>
-          </>
-        )}
-        {!heritage && running && !paused && <button onClick={() => runEdit(api.simPause)}>⏸ Pause</button>}
-        {!heritage && running && paused && <button onClick={() => runEdit(api.simResume)}>▶ Resume</button>}
-        {!heritage && running && <button onClick={() => runEdit(api.simStop)}>■ Stop</button>}
-        {!heritage && (
-          <span className="status">
-            {running
-              ? `${meta.day_name} (Day ${meta.day}) ${meta.clock} · cars: ` +
-                `${meta.vehicles?.length ?? 0} · queue: ${meta.queue_depth ?? 0}`
-              : 'sim stopped'}
-          </span>
-        )}
+        {/* Playback + live stats live in the bottom control bar. */}
         <span className="status dim">{mapLabel}</span>
         <button className={showDesign ? 'active' : ''} title="UI design"
                 onClick={() => setShowDesign((v) => !v)}>
-          {heritage ? <Icon name="design" /> : '🎨'}</button>
+          <Icon name="design" /></button>
         <span className={connected ? 'dot ok' : 'dot bad'} title="backend link" />
       </div>
 
-      {heritage ? (
-        <>
-          {/* Left tool rail (docked, icon-first). */}
+      <>
+        {/* Left tool rail (docked, icon-first). */}
           {!leftCollapsed && (
             <aside className="tool-rail">
               {editControls}
@@ -572,15 +536,7 @@ export default function App() {
             onResume={() => runEdit(api.simResume)}
             onStop={() => runEdit(api.simStop)}
           />
-        </>
-      ) : (
-        <>
-          <div className="editbar">{editControls}</div>
-          {showAnalysis && analysisEl}
-          {designPanel}
-          {inspectorPanel}
-        </>
-      )}
+      </>
 
       {error && <div className="error" onClick={() => setError(null)}>{error}</div>}
     </div>
