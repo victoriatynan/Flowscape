@@ -943,3 +943,42 @@
 
 /* The framing overlay (compass + botanical corners) sits above the paper. */
 .ha-frame { opacity: 0.9; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Unified hand-drawn ink for the lines a rounded-rect border-image CANNOT
+   trace — single divider rules and round elements. Both come from the SAME
+   waver+litShape pen as the panel frames and the map linework
+   (heritageArt.ts: inkDividerUri → --ha-ink-hr, inkRingUri → --ha-ink-ring),
+   so no straight machine-drawn hairline or circle survives anywhere.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Chapter-divider rules under section headers: one wavy dip-pen stroke laid as
+   a bottom background-image, replacing the 1px CSS hairline. */
+:root[data-ui-preset='Heritage Atlas'] .analysis .section {
+  border-bottom: none;
+  background-image: var(--ha-ink-hr);
+  background-repeat: no-repeat;
+  background-position: left bottom;
+  background-size: 100% 7px;
+}
+
+/* The advanced-controls separator: the same inked rule along its top edge. */
+:root[data-ui-preset='Heritage Atlas'] .control-advanced {
+  border-top: none;
+  background-image: var(--ha-ink-hr);
+  background-repeat: no-repeat;
+  background-position: left top;
+  background-size: 100% 7px;
+}
+
+/* Round playback buttons: a hand-inked pen RING (inkRingUri) instead of the
+   stretched rectangular frame a border-image would draw on a circle. The paper
+   washes ride behind the ring so the button still reads as a paper tile. */
+:root[data-ui-preset='Heritage Atlas'] .control-bar button.brass {
+  border-image: none;
+  border-color: transparent;
+  background-image: var(--ha-ink-ring), var(--ha-paper), var(--ha-paper);
+  background-repeat: no-repeat, repeat, repeat;
+  background-position: center, 0 0, 33px 21px;
+  background-size: 100% 100%, 149px 149px, 97px 97px;
+}

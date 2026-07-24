@@ -1,14 +1,14 @@
 import { useState } from 'react'
 import {
-  type UIConfig, type InkConfig, FONT_FAMILIES, INK_CHARACTERS, DEFAULT_INK,
-  characterInk, applyConfig, presetConfig, presetNames,
+  type UIConfig, FONT_FAMILIES, applyConfig,
   resetToDefaults, saveAsDefault, saveUserPreset,
 } from './uiConfig'
 
 // In-app UI Design panel (UI_PLAN.md's "design sandbox", living inside the
-// real interface so the preview can never drift from the product): edit the
-// chrome tokens live, switch presets, save your own, and Save as Default so
-// Flowscape starts with your design.
+// real interface so the preview can never drift from the product): retune the
+// single Heritage skin's tokens live, save your own variant, and Save as
+// Default so Flowscape starts with your design. There is no skin switcher —
+// Heritage Atlas is the only skin; edits produce a 'Custom' variant of it.
 
 const TOKEN_LABELS: [string, string][] = [
   ['panel-bg', 'Panel background'],
@@ -39,12 +39,6 @@ export default function DesignPanel({ config, onChange }: Props) {
     update({ ...config, preset: 'Custom',
              theme: { ...config.theme, [key]: value } })
 
-  // Map-ink character. Nudging a slider flips `character` to 'Custom'; picking a
-  // named character resets the three multipliers to its preset (colour is kept).
-  const ink: InkConfig = config.ink ?? DEFAULT_INK
-  const setInk = (patch: Partial<InkConfig>) =>
-    update({ ...config, ink: { ...ink, ...patch } })
-
   const flash = () => {
     setSavedFlash(true)
     window.setTimeout(() => setSavedFlash(false), 1200)
@@ -52,13 +46,6 @@ export default function DesignPanel({ config, onChange }: Props) {
 
   return (
     <div className="design">
-      <div className="row">
-        <label>Preset</label>
-        <select value={presetNames().includes(config.preset) ? config.preset : 'Default'}
-                onChange={(e) => update(presetConfig(e.target.value))}>
-          {presetNames().map((n) => <option key={n} value={n}>{n}</option>)}
-        </select>
-      </div>
       {TOKEN_LABELS.map(([key, label]) => (
         <div className="row" key={key}>
           <label>{label}</label>
@@ -99,39 +86,6 @@ export default function DesignPanel({ config, onChange }: Props) {
         <input type="range" min={0} max={16} step={1} value={config.radius}
                onChange={(e) => update({ ...config, preset: 'Custom',
                                          radius: Number(e.target.value) })} />
-      </div>
-      <div className="row"><label>Map ink</label></div>
-      <div className="row">
-        <label>Character</label>
-        <select value={ink.character}
-                onChange={(e) => update({ ...config, ink:
-                  characterInk(e.target.value, ink.ink) })}>
-          {Object.keys(INK_CHARACTERS).map((n) => <option key={n} value={n}>{n}</option>)}
-          {!(ink.character in INK_CHARACTERS) && <option value="Custom">Custom</option>}
-        </select>
-      </div>
-      <div className="row">
-        <label>Wobble {ink.wobble.toFixed(1)}</label>
-        <input type="range" min={0} max={2.5} step={0.1} value={ink.wobble}
-               onChange={(e) => setInk({ character: 'Custom',
-                                         wobble: Number(e.target.value) })} />
-      </div>
-      <div className="row">
-        <label>Weight {ink.weight.toFixed(1)}</label>
-        <input type="range" min={0.4} max={2} step={0.1} value={ink.weight}
-               onChange={(e) => setInk({ character: 'Custom',
-                                         weight: Number(e.target.value) })} />
-      </div>
-      <div className="row">
-        <label>Density {ink.density.toFixed(1)}</label>
-        <input type="range" min={0.5} max={1.6} step={0.1} value={ink.density}
-               onChange={(e) => setInk({ character: 'Custom',
-                                         density: Number(e.target.value) })} />
-      </div>
-      <div className="row">
-        <label>Ink colour</label>
-        <input type="color" value={ink.ink}
-               onChange={(e) => setInk({ ink: e.target.value })} />
       </div>
       <div className="row buttons">
         <button onClick={() => { saveAsDefault(config); flash() }}>

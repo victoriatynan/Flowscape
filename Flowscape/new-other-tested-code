@@ -1,0 +1,70 @@
+import numpy as np
+from PIL import Image, ImageEnhance, ImageFilter
+
+def generate_static_paper(width=3000, height=3000, output_path="old_paper_bg.png"):
+    print("Generating base color matrix...")
+    # Base warm off-white tone (RGB: 244, 238, 219)
+    base_r, base_g, base_b = 244, 238, 219
+
+Create a uniform base image array
+    arr = np.zeros((height, width, 3), dtype=np.uint8)
+    arr[:, :, 0] = base_r
+    arr[:, :, 1] = base_g
+    arr[:, :, 2] = base_b
+
+    print("Injecting fine grain noise...")
+    # 2. Generate high-frequency monochromatic grain using NumPy
+    # Standard deviation sets the strength of the paper tooth
+    noise = np.random.normal(0, 7.5, (height, width, 1))
+
+Broadcast the identical noise shift to R, G, and B to avoid color static
+    arr = np.clip(arr.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+    img = Image.fromarray(arr)
+print("Simulating organic paper stains...")
+    # 3. Create low-frequency aging stains using a downscaled blur mask
+    stain_size = (int(width / 30), int(height / 30))
+    stain_raw = np.random.normal(0, 12, (stain_size[1], stain_size[0], 1))
+    stain_mask = Image.fromarray(np.clip(128 + stain_raw, 0, 255).astype(np.uint8).squeeze(), mode='L')
+
+Upscale with heavy Bilinear filtering to stretch the noise into soft blobs
+    stain_mask = stain_mask.resize((width, height), resample=Image.Resampling.BILINEAR)
+    stain_mask = stain_mask.filter(ImageFilter.GaussianBlur(radius=width / 40))
+
+Overlay the stains onto the base layer using Multiply logic
+    stain_blend = Image.eval(stain_mask, lambda x: (x / 127.5))
+    img = Image.merge("RGB", [
+        Image.eval(img.getchannel(0), lambda x: int(clip_pixel(x * stain_blend))),
+        Image.eval(img.getchannel(1), lambda x: int(clip_pixel(x * stain_blend))),
+        Image.eval(img.getchannel(2), lambda x: int(clip_pixel(x * stain_blend)))
+    ])
+
+    print("Adding vignette edge-burn...")
+    # 4. Burn the edges to mimic historical atmospheric oxidation
+    x = np.linspace(-1, 1, width)
+    y = np.linspace(-1, 1, height)
+    X, Y = np.meshgrid(x, y)
+
+Distance formula from the absolute center of the sheet
+    radius = np.sqrt(X2 + Y2)
+
+Curve profile: keep center clear, sharply darken corners
+    vignette = 1.0 - 0.25 * (radius ** 3)
+    vignette = np.clip(vignette, 0, 1)
+
+Convert mask to array, apply to image channels
+    img_arr = np.array(img).astype(float)
+    for i in range(3):
+        img_arr[:, :, i] *= vignette
+img = Image.fromarray(np.clip(img_arr, 0, 255).astype(np.uint8))
+
+    # 5. Final contrast adjustments to crisp the fibers
+    img = ImageEnhance.Contrast(img).enhance(1.15)
+
+    img.save(output_path, "PNG")
+    print(f"Success! High-resolution background saved to: {output_path}")
+
+def clip_pixel(val):
+    return max(0, min(255, val))
+
+if name == "main":
+    generate_static_paper()
