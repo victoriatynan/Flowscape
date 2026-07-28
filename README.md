@@ -62,8 +62,5 @@ The geometry diagnostics (`check_fillet_direction.py`, `check_taper.py`) sweep t
 ## Documentation
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — layer dependency diagram, module map, data flow, and the extension patterns every subsystem follows.
-- **[REFACTOR_PLAN.md](REFACTOR_PLAN.md)** — current split targets and the proposed extraction order.
-- **[WEB_MIGRATION_PLAN.md](WEB_MIGRATION_PLAN.md)** — the completed migration to the browser, phase by phase, with the architectural invariants the codebase follows.
-- **[EDITOR_IMPROVEMENT_PLAN.md](EDITOR_IMPROVEMENT_PLAN.md)** — editor workflow improvements (continuous road drawing, real lane markings, the Map Analysis panel).
-- **[UI_PLAN.md](UI_PLAN.md)** — the UI theme/configuration system (design panel, presets, saved defaults).
-- **[SIMULATION_PLAN.md](SIMULATION_PLAN.md)** — forward roadmap: taking the simulation from watchable demo to a validated traffic-engineering tool (unified clock, physics validation, metrics, scale).
+- **[TODO.md](TODO.md)** — the single list of outstanding work, ranked by impact (road classification, multi-driveway support, access visuals, and the backlog).
+- **[ROAD_CLASSIFICATION_ASBUILT.md](ROAD_CLASSIFICATION_ASBUILT.md)** — the full re-application spec (exact constants, resolvers, wiring, tests) for the functional-classification system tracked in TODO.md.
