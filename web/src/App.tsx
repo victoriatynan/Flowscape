@@ -422,6 +422,7 @@ export default function App() {
       geometry={geometryRef.current}
       controlSchema={controlSchema}
       roadPresets={roadPresets}
+      geoVersion={geoVersion}
       onMutated={() => refreshGeometry(false).catch((e) => setError(String(e)))}
       onDeleted={() => {
         setSelection(null)

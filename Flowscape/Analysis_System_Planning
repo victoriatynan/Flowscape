@@ -1,0 +1,642 @@
+Flowscape Analysis Platform
+Vision
+
+Create a generic, extensible engineering analysis platform that transforms simulation state into structured transportation engineering knowledge.
+
+The Analysis Platform is not part of the simulation engine. It does not influence vehicle behavior, routing, demand generation, or roadway geometry. Instead, it observes the simulation, evaluates it using engineering principles, and produces reusable analysis results.
+
+These analysis results become the foundation for every user-facing feature in Flowscape, including the Inspector, reports, charts, scenario comparison, educational lessons, assessments, and optional AI-assisted explanations.
+
+The goal is to build the analysis once and allow many different applications to consume it.
+
+Guiding Principles
+Separation of Responsibilities
+
+Each layer has a single responsibility.
+
+Simulation
+    ↓
+Analysis
+    ↓
+Applications
+Simulation
+
+Answers:
+
+"What exists?"
+
+Examples:
+
+Vehicles
+Roads
+Intersections
+Buildings
+Signals
+Demand
+Routing
+Analysis
+
+Answers:
+
+"What does it mean?"
+
+Examples:
+
+Capacity
+Delay
+Level of Service
+Stopping Sight Distance
+Network hierarchy
+Congestion
+Safety
+Applications
+
+Answer:
+
+"How should this information be presented?"
+
+Examples:
+
+Inspector
+Reports
+Charts
+Scenario comparison
+Educational lessons
+Assessments
+Debug overlays
+Optional AI assistant
+
+Applications never perform engineering calculations.
+
+High-Level Architecture
+                    Applications
+───────────────────────────────────────────────
+ Inspector
+ Reports
+ Charts
+ Scenario Comparison
+ Lessons
+ Assessments
+ Debug Tools
+ Export
+                Analysis Platform
+
+ Recommendations
+ Findings
+ Engineering Metrics
+ Observations
+              Simulation Engine
+
+ Roads
+ Vehicles
+ Buildings
+ Demand
+ Routing
+ Signals
+
+Core Data Flow
+Simulation Snapshot
+        │
+        ▼
+Observation Engine
+        │
+        ▼
+Metric Engine
+        │
+        ▼
+Finding Engine
+        │
+        ▼
+Recommendation Engine
+        │
+        ▼
+Analysis Results
+        │
+        ▼
+Applications
+
+Each stage consumes immutable outputs from the previous stage.
+
+No stage modifies simulation state.
+
+Phase 1 — Simulation Snapshots
+Goal
+
+Create immutable snapshots representing the current simulation state.
+
+Snapshots become the only input to the Analysis Platform.
+
+Snapshot Categories
+Road Snapshot
+
+Contains factual information only.
+
+Example:
+
+ID
+Length
+Geometry
+Functional class
+Context
+Design speed
+Lane counts
+Cross section
+Vehicle count
+Average speed
+Queue length
+Travel time
+Intersection Snapshot
+Control type
+Approach volumes
+Turning movements
+Queue lengths
+Throughput
+Vehicle Snapshot
+Origin
+Destination
+Route
+Current location
+Speed
+Delay
+Network Snapshot
+Connected components
+Origins
+Destinations
+Completed trips
+Demand totals
+
+Snapshots contain no engineering conclusions.
+
+Phase 2 — Observation Engine
+Goal
+
+Extract reusable observations from simulation snapshots.
+
+Observations are measurable facts.
+
+They are not engineering metrics.
+
+They are not recommendations.
+
+They are not educational.
+
+Observation Categories
+Geometry
+
+Examples:
+
+Curve radius
+Road length
+Lane width
+Shoulder width
+Median width
+Cross section
+Grade (future)
+Traffic
+
+Examples:
+
+Vehicle count
+Average speed
+Density
+Delay
+Throughput
+Queue length
+Network
+
+Examples:
+
+Connectivity
+Hierarchy
+Centrality
+Route lengths
+Environment
+
+Examples:
+
+Nearby buildings
+Land use
+Terrain (future)
+Weather (future)
+Safety
+
+Examples:
+
+Sight obstructions
+Driveway spacing
+Intersection spacing
+Observation Interface
+
+Every observation implements:
+
+Observation
+
+compute(snapshot)
+
+↓
+
+ObservationResult
+
+Observations never depend on one another.
+
+Phase 3 — Engineering Metrics
+Goal
+
+Convert observations into reusable engineering metrics.
+
+Metrics are calculations.
+
+They do not determine whether something is "good" or "bad."
+
+Examples
+
+Traffic Operations
+
+Capacity
+Volume
+Density
+Delay
+Queue length
+Throughput
+V/C ratio
+Level of Service
+
+Roadway Geometry
+
+Stopping Sight Distance
+Horizontal curve radius
+Vertical curve evaluation
+Superelevation
+Passing sight distance
+Intersection sight distance
+
+Multimodal (Future)
+
+Bicycle Level of Service
+Pedestrian Level of Service
+Transit accessibility
+Metric Interface
+Metric
+
+required_observations
+
+compute(observations)
+
+↓
+
+MetricResult
+
+Metrics declare their dependencies.
+
+The execution engine resolves ordering automatically.
+
+Phase 4 — Findings Engine
+Goal
+
+Interpret engineering metrics.
+
+Findings explain engineering significance.
+
+Example
+
+Metric:
+
+V/C = 1.18
+
+Finding:
+
+Road operating above practical capacity.
+
+Another example
+
+Metric:
+
+Required SSD = 495 ft
+
+Available SSD = 380 ft
+
+Finding:
+
+Stopping sight distance deficiency.
+Finding Structure
+
+Every finding contains:
+
+Name
+Severity
+Confidence (if applicable)
+Supporting metrics
+Supporting observations
+Evidence
+Engineering explanation
+
+Example
+
+Finding
+
+Stopping Sight Distance Deficiency
+
+Evidence
+
+Required SSD
+
+495 ft
+
+Available SSD
+
+380 ft
+
+Margin
+
+−115 ft
+
+Design Speed
+
+55 mph
+
+Curve Radius
+
+620 ft
+
+Every conclusion is traceable.
+
+Phase 5 — Recommendation Engine
+Goal
+
+Generate possible engineering improvements.
+
+Recommendations are independent from findings.
+
+A finding may produce zero, one, or many recommendations.
+
+Example
+
+Finding
+
+Stopping Sight Distance Deficiency
+
+↓
+
+Recommendations
+
+Increase curve radius
+Reduce design speed
+Remove sight obstruction
+
+Each recommendation contains:
+
+Expected benefit
+Tradeoffs
+Supporting evidence
+Confidence (if applicable)
+Phase 6 — Analysis Results
+
+The output of the platform is a complete analysis package.
+
+Example:
+
+Analysis Result
+
+Observations
+
+Metrics
+
+Findings
+
+Recommendations
+
+Metadata
+
+Nothing downstream performs engineering calculations.
+
+Applications simply consume these results.
+
+Phase 7 — Applications
+
+Applications present analysis in different ways.
+
+They never implement engineering logic.
+
+Inspector
+
+Displays:
+
+Road properties
+Metrics
+Findings
+Recommendations
+Reports
+
+Generates engineering summaries.
+
+Examples:
+
+Network report
+Safety report
+Capacity report
+Geometry report
+Charts
+
+Visualizes:
+
+Delay
+Queue length
+Speed
+LOS
+Demand
+Scenario Comparison
+
+Compare two analyses.
+
+Example:
+
+Travel Time
+
+Before
+
+8.3 min
+
+After
+
+6.7 min
+
+Difference
+
+−19%
+Lessons
+
+Educational modules consume findings.
+
+Example:
+
+Improve the roadway until all SSD findings are resolved.
+
+Assessments
+
+Automatically score designs.
+
+Examples:
+
+Road hierarchy
+LOS targets
+SSD compliance
+Connectivity
+Debug Tools
+
+Developer-oriented visualization.
+
+Examples:
+
+Observation overlays
+Metric overlays
+Finding overlays
+Test map zones
+Export
+
+Future:
+
+JSON
+CSV
+PDF
+Presentation
+AI Assistant (Optional)
+
+The AI is simply another consumer of analysis results.
+
+It never reads the simulation directly.
+
+It explains findings already produced by the platform.
+
+The Analysis Platform must remain fully useful without any AI component.
+
+Plugin Architecture
+
+Every stage is extensible.
+
+Observation
+class Observation:
+
+    id
+
+    category
+
+    def compute(snapshot):
+        ...
+Metric
+class Metric:
+
+    id
+
+    required_observations
+
+    def compute(observations):
+        ...
+Finding
+class Finding:
+
+    id
+
+    required_metrics
+
+    def evaluate(metrics):
+        ...
+Recommendation
+class Recommendation:
+
+    id
+
+    required_findings
+
+    def generate(findings):
+        ...
+
+Adding a new engineering analysis should require only registering new plugins, not modifying the execution engine.
+
+Package Structure
+analysis/
+│
+├── snapshot/
+│   ├── builder.py
+│   ├── models.py
+│   └── serializers.py
+│
+├── observations/
+│   ├── geometry/
+│   ├── traffic/
+│   ├── network/
+│   ├── environment/
+│   └── safety/
+│
+├── metrics/
+│   ├── traffic/
+│   ├── geometry/
+│   ├── safety/
+│   └── multimodal/
+│
+├── findings/
+│   ├── traffic/
+│   ├── geometry/
+│   ├── safety/
+│   └── network/
+│
+├── recommendations/
+│
+├── engine/
+│   ├── pipeline.py
+│   ├── registry.py
+│   ├── dependency_graph.py
+│   └── cache.py
+│
+├── models/
+│
+└── tests/
+Execution Pipeline
+
+The platform executes by dependency rather than by hardcoded order.
+
+Simulation Snapshot
+        │
+        ▼
+Observation Registry
+        │
+        ▼
+Observation Cache
+        │
+        ▼
+Metric Registry
+        │
+        ▼
+Metric Cache
+        │
+        ▼
+Finding Registry
+        │
+        ▼
+Recommendation Registry
+        │
+        ▼
+Analysis Results
+        │
+        ▼
+Applications
+
+Shared computations are performed once and reused throughout the pipeline.
+
+Initial Implementation Roadmap
+Milestone 1 — Core Framework
+Implement immutable simulation snapshots.
+Build the pipeline engine and dependency resolver.
+Add plugin registration for observations, metrics, findings, and recommendations.
+Milestone 2 — Traffic Operations
+Implement observations for traffic state and road geometry.
+Add metrics for capacity, delay, queue length, V/C ratio, and Level of Service.
+Generate findings and recommendations for congestion and operational issues.
+Milestone 3 — Geometric Design
+Add observations for roadway geometry and visibility.
+Implement Stopping Sight Distance as the first geometric metric.
+Extend findings and recommendations for roadway design deficiencies.
+Milestone 4 — User-Facing Applications
+Integrate analysis into the Inspector.
+Add charts, reports, and scenario comparison.
+Expose overlays for observations, metrics, and findings.
+Support automated lesson and assessment generation.

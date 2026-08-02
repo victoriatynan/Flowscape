@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import * as api from './api'
 import { HeritageFrame } from './HeritageIcons'
+import AnalysisSection from './analysis/AnalysisSection'
 import type { ControlSchema, MapGeometry, RoadPresetsSchema } from './types'
 
 // Schema-driven property panel for the current selection — the browser
@@ -18,6 +19,7 @@ interface Props {
   geometry: MapGeometry
   controlSchema: ControlSchema | null
   roadPresets: RoadPresetsSchema | null
+  geoVersion: number           // bump on map edits — refreshes read-only analysis
   heritage?: boolean           // Heritage Atlas decorative frame
   onMutated: () => void        // refetch geometry (keeps selection)
   onDeleted: () => void        // refetch + clear selection
@@ -25,8 +27,8 @@ interface Props {
 }
 
 export default function Inspector({ selection, geometry, controlSchema,
-                                    roadPresets, heritage, onMutated, onDeleted,
-                                    onError }: Props) {
+                                    roadPresets, geoVersion, heritage, onMutated,
+                                    onDeleted, onError }: Props) {
   const [pendingControl, setPendingControl] = useState<string | null>(null)
   const [settings, setSettings] = useState<Record<string, number>>({})
   const [pendingProfile, setPendingProfile] = useState<{
@@ -146,6 +148,20 @@ export default function Inspector({ selection, geometry, controlSchema,
       <div className="row">
         <button className="danger" onClick={del}>Delete {selection.kind}</button>
       </div>
+      {/* Read-only Analysis Platform region. Roads get the full projected
+          package; nodes/buildings honestly show that no per-entity analysis
+          exists yet (per-node/per-building plugins have not landed). */}
+      {selection.kind === 'road' ? (
+        <AnalysisSection roadId={selection.id} geoVersion={geoVersion}
+                         heritage={heritage} />
+      ) : (
+        <div className="analysis-section">
+          <div className="row analysis-section-title">Engineering analysis</div>
+          <div className="row analysis-empty">
+            No {selection.kind}-level analysis available yet.
+          </div>
+        </div>
+      )}
     </div>
   )
 }

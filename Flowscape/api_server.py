@@ -43,6 +43,7 @@ from road_style import (get_road_profile, offset_polyline, ROAD_PROFILE_PRESETS,
 from routing import lane_polyline, _polyline_length
 from sim_session import SimulationSession, DEFAULT_TICK_RATE
 from undo_history import Command, UndoStack
+from analysis import analyze, StaticSource, RuntimeSource
 
 # Pacing-loop tuning. POLL is how often the loop checks for due ticks;
 # MAX_TICKS_PER_SLICE caps catch-up after a stall (beyond it the debt is
@@ -774,19 +775,24 @@ def create_app(world=None):
         informational -- computing it never touches simulation state."""
         net = world.network
 
-        # Buildings by category (+ population/jobs from nominal capacity).
+        # Convergence track (ANALYSIS_PLATFORM_M4.md): the building mix and the
+        # connectivity component membership now come from platform observations
+        # instead of being recomputed inline here. `only` runs just those two
+        # observations (no metrics/findings). The assembled JSON below is
+        # byte-identical to the previous inline version.
+        platform = analyze(StaticSource(net),
+                           only=("building_mix", "connected_components"))
+        mix = platform.observations["building_mix"].detail
+        main_component = set(
+            platform.observations["connected_components"].detail["main_component"])
+
+        # Buildings by category (+ population/jobs from nominal capacity). The
+        # observation reports only the categories that occur; seed every category
+        # to 0 so the response shape (all categories, in CATEGORIES order) holds.
         by_category = {c: 0 for c in CATEGORIES}
-        population = 0
-        jobs = 0
-        for b in net.buildings.values():
-            bt = BUILDING_TYPES.get(b.building_type)
-            if bt is None:
-                continue
-            by_category[bt.category] = by_category.get(bt.category, 0) + 1
-            if bt.category == RESIDENTIAL:
-                population += bt.capacity
-            else:
-                jobs += bt.capacity
+        by_category.update(mix["by_category"])
+        population = mix["population"]
+        jobs = mix["jobs"]
 
         # Demand: the same deterministic generation the simulation uses.
         trips = generate_trips(net, day_index=0) if net.buildings else []
@@ -803,25 +809,9 @@ def create_app(world=None):
                 profile.lanes_forward() + profile.lanes_reverse())
         intersections = sum(1 for nid in net.nodes if net.is_intersection(nid))
 
-        # Connectivity warnings: union-find over road links, then flag
-        # buildings that are detached or in a minority component; plus
-        # demand-mix gaps (residential with nowhere to go).
-        parent = {nid: nid for nid in net.nodes}
-
-        def find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        for road in roads:
-            if road.start_node_id in parent and road.end_node_id in parent:
-                parent[find(road.start_node_id)] = find(road.end_node_id)
-        components = {}
-        for nid in net.nodes:
-            components.setdefault(find(nid), set()).add(nid)
-        main_component = max(components.values(), key=len) if components else set()
-
+        # Connectivity warnings: flag buildings that are detached or in a
+        # minority component (using the platform's component membership above),
+        # plus demand-mix gaps (residential with nowhere to go).
         warnings = []
         for b in net.buildings.values():
             attached = [n for n in b.connection_node_ids if n in net.nodes]
@@ -853,6 +843,19 @@ def create_app(world=None):
                         "lane_miles": lane_length_ft / 5280.0},
             "warnings": warnings,
         }
+
+    @app.get("/api/analysis/v2")
+    def analysis_v2():
+        """On-demand Analysis Platform run (ANALYSIS_PLATFORM_M1.md). A NEW,
+        non-breaking endpoint that runs the observation pipeline over an
+        immutable snapshot of current state -- the running simulation if one is
+        active, otherwise the static editor map. Read-only: it never advances or
+        mutates the sim. The legacy /api/analysis above is untouched and still
+        serves the current UI; its calculations migrate into this platform over
+        later milestones."""
+        source = (RuntimeSource(world.session) if world.session is not None
+                  else StaticSource(world.network))
+        return analyze(source).to_dict()
 
     @app.get("/api/schema/intersection-control")
     def schema_intersection_control():

@@ -20,6 +20,7 @@ from destinations import BUILDING_TYPES, RESIDENTIAL, generate_trips
 from sim_clock import TripScheduler
 from spawn_queue import SpawnQueue, SpawnResult, DEFAULT_MAX_WAIT_SEC
 from traffic_sim import TrafficSimulation
+from traffic_counter import TrafficCounter, DEFAULT_WINDOW_HOURS
 
 # Trip demo defaults: a watchable subset of the day's trips, played back over
 # an accelerated clock. The full realistic count would be too many cars.
@@ -85,7 +86,8 @@ class SimulationSession:
                  tick_rate=DEFAULT_TICK_RATE,
                  unified=False,
                  time_scale=UNIFIED_TIME_SCALE_DEFAULT,
-                 unified_max_wait_sim_sec=UNIFIED_MAX_WAIT_SIM_SEC):
+                 unified_max_wait_sim_sec=UNIFIED_MAX_WAIT_SIM_SEC,
+                 volume_window_hours=DEFAULT_WINDOW_HOURS):
         if not network.buildings:
             raise ValueError("network has no buildings -- nothing generates trips")
         self.tick_dt = 1.0 / float(tick_rate)
@@ -115,6 +117,11 @@ class SimulationSession:
 
         self.traffic = TrafficSimulation(network)
         self.traffic.prepare_routes()
+
+        # Simulation-derived traffic volume: a rolling per-road count of actual
+        # vehicle traversals, read read-only by the Analysis Platform (V/C, LOS).
+        # Timestamped on the demand clock (scheduler.time, sim-hours).
+        self.traffic_counter = TrafficCounter(window_hours=volume_window_hours)
 
         def day_trips(day_index):
             # day_index 0 = Monday; 5/6 = Sat/Sun (no work on weekends). Each
@@ -209,6 +216,10 @@ class SimulationSession:
         # 5. ADVANCE the vehicle simulation (sub-stepped in unified mode).
         self._advance_physics(dt)
 
+        # 6. COUNT traversals for volume observation. Read-only over the vehicles
+        #    physics just moved; timestamped on the demand clock (sim-hours).
+        self.traffic_counter.record(self.traffic.vehicles, self.scheduler.time)
+
     def _wait_now(self):
         """The clock the spawn queue's wait/expiry runs on. Decoupled default:
         real elapsed seconds. Unified: the single sim clock, in sim-seconds
@@ -264,6 +275,10 @@ class SimulationSession:
                 }
                 for v in self.traffic.vehicles
             ],
+            # Simulation-derived per-road volume (veh/hr) over the rolling
+            # window, for the Analysis Platform. {road_id: veh_per_hr}.
+            "road_volumes": self.traffic_counter.volume_per_hour(
+                self.scheduler.time),
             "queue_depth": self.spawn_queue.depth,
             "released": self.scheduler.released,
             "expired": self.spawn_queue.expired,

@@ -1,4 +1,4 @@
-import type { BuildingTypesSchema, ControlSchema, MapGeometry,
+import type { AnalysisResult, BuildingTypesSchema, ControlSchema, MapGeometry,
               RoadPresetsSchema } from './types'
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -68,6 +68,11 @@ export const redo = () => post('/api/edit/redo')
 
 export const fetchRoadPresets = () =>
   req<RoadPresetsSchema>('/api/schema/road-presets')
+
+// Read-only Analysis Platform package (M4). Existing endpoint, unchanged
+// contract: the full observations/metrics/findings/recommendations bundle, from
+// the Runtime source if a sim is active, else Static.
+export const fetchAnalysisV2 = () => req<AnalysisResult>('/api/analysis/v2')
 export const listMapFiles = () =>
   req<{ files: string[] }>('/api/map/files')
 export const saveMap = (filename: string) =>

@@ -223,6 +223,97 @@
   line-height: 1.6;
 }
 
+/* Read-only Analysis Platform region inside the Inspector (M4). Purely
+   presentational: it renders values the platform already computed. */
+.analysis-section {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ui-button-border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.analysis-section-title {
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.analysis-empty {
+  opacity: 0.65;
+  font-style: italic;
+}
+
+.analysis-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.analysis-group-label {
+  text-transform: uppercase;
+  font-size: 0.72em;
+  letter-spacing: 0.06em;
+  opacity: 0.6;
+}
+
+.analysis-metric,
+.analysis-finding,
+.analysis-rec {
+  border: 1px solid var(--ui-button-border);
+  border-radius: var(--ui-radius);
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.analysis-metric-name,
+.analysis-finding-name,
+.analysis-rec-title {
+  font-weight: 600;
+}
+
+.analysis-field label,
+.analysis-rec-benefit label,
+.analysis-rec-tradeoffs label {
+  opacity: 0.7;
+}
+
+.analysis-units {
+  opacity: 0.6;
+}
+
+.analysis-finding-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.analysis-severity {
+  color: #fff;
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.analysis-explanation,
+.analysis-rec-benefit,
+.analysis-rec-tradeoffs {
+  display: block;
+  opacity: 0.85;
+  line-height: 1.4;
+}
+
+.analysis-rec-benefit,
+.analysis-rec-tradeoffs {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
 .analysis .section {
   font-weight: 700;
   color: var(--ui-accent);

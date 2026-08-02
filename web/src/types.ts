@@ -142,3 +142,86 @@ export interface BuildingTypesSchema {
     close_hour: number
   }>
 }
+
+// ---------------------------------------------------------------------------
+// Analysis Platform (M4) — serialized AnalysisResult shapes.
+//
+// These mirror the backend `to_dict()` field-for-field (analysis/**/base.py and
+// analysis/models/result.py). The frontend is a PRESENTATION LAYER ONLY: it
+// renders these already-computed values and never derives, bands, converts, or
+// judges any of them. Adding a field here means the platform serialized it.
+// ---------------------------------------------------------------------------
+
+export type Severity = 'none' | 'low' | 'moderate' | 'high'
+export type Stage = 'observation' | 'metric' | 'finding' | 'recommendation'
+
+// Per-entity detail is keyed by road id. NOTE: JSON object keys are strings, so
+// these come back stringified — look up with String(roadId). Values are opaque
+// to the presentation layer: a scalar, or a record of already-computed fields.
+export type PerRoad = Record<string, number | string | Record<string, unknown> | null>
+
+// Observations and metrics share the same serialized shape (base.py).
+export interface StageValueResult {
+  id: string
+  category: string
+  kind: 'observation' | 'metric'
+  value: number | string | null           // network roll-up; null = honest N/A
+  units: string | null
+  detail?: { per_road?: PerRoad } & Record<string, unknown>
+}
+export type ObservationResult = StageValueResult & { kind: 'observation' }
+export type MetricResult = StageValueResult & { kind: 'metric' }
+
+// One flagged instance. Always carries road_id; the rest are plugin-specific,
+// already display-ready (e.g. vc, volume, capacity | required_ft, available_ft,
+// margin_ft, design_speed_mph, radius_ft). The UI never interprets them.
+export interface EvidenceRow {
+  road_id: number
+  severity?: Severity
+  [field: string]: unknown
+}
+
+export interface FindingResult {
+  id: string
+  category: string
+  kind: 'finding'
+  name: string
+  severity: Severity                       // network roll-up severity
+  flagged?: boolean                        // == evidence.length > 0
+  evidence: EvidenceRow[]
+  explanation: string
+  supporting_metrics: string[]
+  supporting_observations: string[]
+  confidence: number | null
+}
+
+export interface RecommendationItem {
+  title: string
+  expected_benefit: string
+  tradeoffs: string
+  supporting_evidence?: unknown            // the road / finding it addresses
+  [field: string]: unknown
+}
+
+export interface RecommendationResult {
+  id: string
+  category: string
+  kind: 'recommendation'
+  items: RecommendationItem[]
+  supporting_findings: string[]
+  confidence: number | null
+}
+
+export interface AnalysisResult {
+  observations: Record<string, ObservationResult>
+  metrics: Record<string, MetricResult>
+  findings: Record<string, FindingResult>
+  recommendations: Record<string, RecommendationResult>
+  metadata: {
+    source_kind?: string
+    is_running?: boolean
+    snapshot_hash?: string
+    generated_at?: string
+    [k: string]: unknown
+  }
+}

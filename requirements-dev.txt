@@ -1,0 +1,6 @@
+# Development / test dependencies. Install with:
+#   pip install -r requirements-dev.txt
+# (includes the runtime deps, then the test runner on top).
+-r requirements.txt
+
+pytest>=8            # headless test suite (test_*.py + analysis/tests/)
